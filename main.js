@@ -36,7 +36,10 @@ const requiredPush = 1;
 const saturationPush = 5;
 const maxPushSpeed = 118;
 const maxMineralSpeed = 126;
-const maxCorrectionPerFrame = 1.7;
+const maxMineralContactCorrectionPerIteration = 2.4;
+const mineralContactIterations = 10;
+const mineralContactCorrectionRatio = 0.92;
+const mineralContactSlop = 0.02;
 const mineralDampingInsideScoop = 1;
 const physicsSubsteps = 3;
 const maxImpulsePerMineralPerFrame = 36;
@@ -216,7 +219,7 @@ function updateVehicle(dt) {
   const previousY = vehicle.y;
   vehicle.x += vehicle.dirX * vehicleSpeed * input.strength * overload.speedMultiplier * dt;
   vehicle.y += vehicle.dirY * vehicleSpeed * input.strength * overload.speedMultiplier * dt;
-  clampToWalls(vehicle, vehicle.radius);
+  clampVehicleAndBladeToWalls(blade);
   vehicle.vx = (vehicle.x - previousX) / Math.max(dt, 0.001);
   vehicle.vy = (vehicle.y - previousY) / Math.max(dt, 0.001);
 
@@ -308,7 +311,7 @@ function separateVehicleBodyFromMinerals(dt) {
       const knockback = Math.min(hit.depth * mineralCounterForceToVehicle, maxVehicleKnockback);
       vehicle.x -= hit.x * knockback;
       vehicle.y -= hit.y * knockback;
-      clampToWalls(vehicle, vehicle.radius);
+      clampVehicleAndBladeToWalls(getCurrentBladeConfig());
     }
 
     resolveWallContact(mineral);
@@ -798,31 +801,41 @@ function getWallInwardVector(mineral) {
 }
 
 function resolveMineralContacts() {
-  for (let i = 0; i < minerals.length; i += 1) {
-    for (let j = i + 1; j < minerals.length; j += 1) {
-      const a = minerals[i];
-      const b = minerals[j];
-      const hit = getOverlap(a, b);
-      if (!hit) continue;
+  for (let iteration = 0; iteration < mineralContactIterations; iteration += 1) {
+    for (let i = 0; i < minerals.length; i += 1) {
+      for (let j = i + 1; j < minerals.length; j += 1) {
+        const a = minerals[i];
+        const b = minerals[j];
+        const hit = getOverlap(a, b);
+        if (!hit) continue;
 
-      const separate = Math.min(hit.depth * 0.5, maxCorrectionPerFrame);
-      a.x -= hit.x * separate;
-      a.y -= hit.y * separate;
-      b.x += hit.x * separate;
-      b.y += hit.y * separate;
+        const correctionDepth = Math.max(hit.depth - mineralContactSlop, 0);
+        const separate = Math.min(correctionDepth * 0.5 * mineralContactCorrectionRatio, maxMineralContactCorrectionPerIteration);
+        a.x -= hit.x * separate;
+        a.y -= hit.y * separate;
+        b.x += hit.x * separate;
+        b.y += hit.y * separate;
 
-      const relativeVelocity = (b.vx - a.vx) * hit.x + (b.vy - a.vy) * hit.y;
-      if (relativeVelocity < 0) {
-        const impulse = clamp(relativeVelocity * 0.24, -maxImpulsePerMineralPerFrame * 0.35, maxImpulsePerMineralPerFrame * 0.35);
-        a.vx += impulse * hit.x;
-        a.vy += impulse * hit.y;
-        b.vx -= impulse * hit.x;
-        b.vy -= impulse * hit.y;
+        if (iteration === 0) {
+          const relativeVelocity = (b.vx - a.vx) * hit.x + (b.vy - a.vy) * hit.y;
+          if (relativeVelocity < 0) {
+            const impulse = clamp(relativeVelocity * 0.24, -maxImpulsePerMineralPerFrame * 0.35, maxImpulsePerMineralPerFrame * 0.35);
+            a.vx += impulse * hit.x;
+            a.vy += impulse * hit.y;
+            b.vx -= impulse * hit.x;
+            b.vy -= impulse * hit.y;
+          }
+        }
       }
-
-      resolveWallContact(a);
-      resolveWallContact(b);
     }
+
+    for (const mineral of minerals) {
+      resolveWallContact(mineral);
+    }
+  }
+
+  for (const mineral of minerals) {
+    capMineralSpeed(mineral, maxMineralSpeed);
   }
 }
 
@@ -1169,6 +1182,67 @@ function getOverlap(a, b) {
 function clampToWalls(body, radius) {
   body.x = clamp(body.x, world.wall + radius, world.width - world.wall - radius);
   body.y = clamp(body.y, world.wall + radius, world.height - world.wall - radius);
+}
+
+function clampVehicleAndBladeToWalls(blade = getCurrentBladeConfig()) {
+  const correction = getVehicleAndBladeWallCorrection(blade);
+  vehicle.x += correction.x;
+  vehicle.y += correction.y;
+  return correction;
+}
+
+function getVehicleAndBladeWallCorrection(blade) {
+  const bounds = getVehicleAndBladeWorldBounds(blade);
+  let x = 0;
+  let y = 0;
+
+  if (bounds.minX < world.wall) {
+    x = world.wall - bounds.minX;
+  } else if (bounds.maxX > world.width - world.wall) {
+    x = world.width - world.wall - bounds.maxX;
+  }
+
+  if (bounds.minY < world.wall) {
+    y = world.wall - bounds.minY;
+  } else if (bounds.maxY > world.height - world.wall) {
+    y = world.height - world.wall - bounds.maxY;
+  }
+
+  return { x, y };
+}
+
+function getVehicleAndBladeWorldBounds(blade) {
+  const bladeStart = getBladeStart();
+  const bladeEnd = bladeStart + blade.length;
+  const halfWidth = blade.width / 2;
+  const sideRadius = blade.sideLipThickness / 2;
+  const backRadius = blade.innerBackLipThickness / 2;
+  const cornerRadius = Math.max(sideRadius, backRadius, blade.lipThickness / 2);
+  const bounds = {
+    minX: Infinity,
+    maxX: -Infinity,
+    minY: Infinity,
+    maxY: -Infinity,
+  };
+
+  expandBoundsWithLocalCircle(bounds, 0, 0, vehicle.radius);
+  expandBoundsWithLocalCircle(bounds, bladeStart, -halfWidth, cornerRadius);
+  expandBoundsWithLocalCircle(bounds, bladeStart, halfWidth, cornerRadius);
+  expandBoundsWithLocalCircle(bounds, bladeEnd, -halfWidth, sideRadius);
+  expandBoundsWithLocalCircle(bounds, bladeEnd, halfWidth, sideRadius);
+
+  return bounds;
+}
+
+function expandBoundsWithLocalCircle(bounds, localX, localY, radius) {
+  const offset = localToWorldVector(localX, localY);
+  const x = vehicle.x + offset.x;
+  const y = vehicle.y + offset.y;
+
+  bounds.minX = Math.min(bounds.minX, x - radius);
+  bounds.maxX = Math.max(bounds.maxX, x + radius);
+  bounds.minY = Math.min(bounds.minY, y - radius);
+  bounds.maxY = Math.max(bounds.maxY, y + radius);
 }
 
 function getCanvasPointerPosition(event) {

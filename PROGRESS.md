@@ -28,6 +28,7 @@ P0 is a playable mining scoop prototype. The default scoop blade should behave l
 - Collision stability:
   - 3 physics substeps for scoop/mineral collision
   - passive scoop-lip correction after mineral integration
+  - iterative mineral-mineral separation for squeezed piles
   - mineral speed caps and correction caps
 - No visible default scoop attraction:
   - `centerPullForce = 0`
@@ -37,10 +38,13 @@ P0 is a playable mining scoop prototype. The default scoop blade should behave l
 
 ## Latest Change
 
-Changed scoop lips from one-way soft constraints into solid two-sided collision barriers.
+Added wall blocking for the full vehicle-plus-scoop footprint and improved mineral-mineral separation under squeeze.
 
 Important implementation points in `main.js`:
 
+- `clampVehicleAndBladeToWalls` constrains both the vehicle body and scoop lips against world walls.
+- `getVehicleAndBladeWorldBounds` builds an axis-aligned wall footprint from the vehicle body and scoop lip endpoints.
+- `resolveMineralContacts` now runs multiple contact iterations and re-applies wall constraints between iterations.
 - `applyBladeLipCollisions` runs substepped scoop collision.
 - `resolveBladeLipContactsForMineral` updates containment and resolves all lip contacts.
 - `resolveSolidLipContact` performs overlap correction and moving-wall collision response.
@@ -55,6 +59,10 @@ Important implementation points in `main.js`:
 ## Validation Already Run
 
 - `node --check main.js`
+- A Node physics assertion script checked:
+  - scoop footprint cannot cross left, right, top, or bottom walls
+  - overlapping mineral pairs separate to near touching
+  - wall-squeezed mineral pairs separate while staying inside world bounds
 - Browser load through local static server at `http://127.0.0.1:8000/index.html`
 - Browser console errors: none
 - A Node physics assertion script checked:
