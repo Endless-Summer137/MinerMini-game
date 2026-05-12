@@ -1,4 +1,8 @@
 ﻿const mineralCount = 60;
+// mineralCount controls how many rocks spawn on reset. Higher means denser piles
+// and a higher completion target because completionTarget is based on it.
+// Ore state is gameplay logic only. Secured ore must still draw like loose rocks
+// riding in the scoop, not like hidden inventory or grid slots.
 const mineralState = {
   looseOre: "looseOre",
   captureCandidate: "captureCandidate",
@@ -6,81 +10,89 @@ const mineralState = {
   deliveredOre: "deliveredOre",
 };
 
-const vehicleSpeed = 175;
-const joystickMaxRadius = 86;
-const inputDeadZone = 8;
-const facingSmoothingTime = 0.05;
+const vehicleSpeed = 175; // Player travel speed in pixels/second. Higher feels faster but can stress collisions.
+const joystickMaxRadius = 86; // On-screen drag radius before input is treated as full strength.
+const inputDeadZone = 8; // Tiny drag/key noise below this distance is ignored.
+const facingSmoothingTime = 0.05; // Lower turns the scoop faster; higher makes steering feel heavier.
 
-const bladeWidth = 52;
-const bladeLength = 38;
-const bladeLipThickness = 8;
-const bladeSurfaceAlpha = 0.09;
-const innerBackLipPushForce = 920;
-const innerBackLipThickness = 9;
-const innerBackLipFriction = 0.94;
-const sideLipInwardForce = 0;
-const bodyMineralPushForce = 0;
-const centerPullForce = 0;
-const scoopMagnetForce = 0;
-const scoopFrictionInside = 0.045;
-const scoopVelocityInheritance = 0.08;
-const maxAssistDisplacementPerFrame = 0;
-const maxAssistAcceleration = 8;
-const scoopContainmentTolerance = 5;
-const containedStateHysteresis = 10;
-const sideEscapeMargin = 4;
-const sideLipThickness = 14;
-const sideLipRestitution = 0.05;
-const sideLipFriction = 0.9;
-const sideInwardAttractionForce = 0;
-const backLipRestitution = 0.02;
-const maxScoopLipCorrectionPerSubstep = 8;
-const scoopContainmentRange = 0;
+const bladeWidth = 52; // Inner scoop span between side lips. Higher catches wider piles.
+const bladeLength = 38; // Back-to-front scoop depth. Higher gives more room before ore reaches the mouth.
+const bladeLipThickness = 8; // Visual fallback rim thickness used by generic blade bounds.
+const bladeSurfaceAlpha = 0.09; // Transparency of the scoop floor fill; visual only.
+const innerBackLipPushForce = 920; // Main shovel push. Higher makes the back lip shove ore forward harder.
+const innerBackLipThickness = 9; // Solid back-wall thickness. Higher blocks leaks better but shrinks usable space.
+const innerBackLipFriction = 0.94; // Tangential damping on the back lip. Higher reduces sliding along that wall.
+const sideLipInwardForce = 0; // Legacy hook; keep 0 for default non-magnetic scoop.
+const bodyMineralPushForce = 0; // Vehicle body assist. Keep low/0 so the back lip is the main pushing boundary.
+const centerPullForce = 0; // Legacy center attraction. Keep 0 to avoid visible suction.
+const scoopMagnetForce = 0; // Legacy magnetic assist. Keep 0 for passive physical scoop behavior.
+const scoopFrictionInside = 0.045; // Mild floor friction for loose ore inside scoop. Higher settles sliding faster.
+const scoopVelocityInheritance = 0.08; // Loose ore inherits a little scoop motion. Higher feels stickier/more assisted.
+const maxAssistDisplacementPerFrame = 0; // Legacy positional assist cap. Keep 0 so ore is not teleported inward.
+const maxAssistAcceleration = 8; // Caps velocity inheritance strength; higher makes inside ore follow the scoop more.
+const scoopContainmentTolerance = 5; // Extra loose-ore range counted as near the scoop for stability.
+const containedStateHysteresis = 10; // Exit buffer. Higher prevents flicker near lips but can feel forgiving.
+const sideEscapeMargin = 4; // Extra side distance before loose ore is considered clearly outside.
+const sideLipThickness = 14; // Solid side-wall thickness. Higher blocks side leaks but narrows the load zone.
+const sideLipRestitution = 0.05; // Side-wall bounce. Lower feels like dull metal; higher makes rocks rebound.
+const sideLipFriction = 0.9; // Side-wall tangential damping. Higher slows side sliding; lower lets ore glide.
+const sideInwardAttractionForce = 0; // Explicitly off: side lips block, they do not pull ore inward.
+const backLipRestitution = 0.02; // Back-wall bounce. Low values keep pushed ore from popping backward.
+const maxScoopLipCorrectionPerSubstep = 8; // Max overlap fix per substep. Higher resolves deeper penetration faster.
+const scoopContainmentRange = 0; // Legacy range hook; keep 0 unless adding a deliberate containment assist.
 
-const pushForce = 2.4;
-const mineralFriction = 0.88;
-const requiredPush = 1;
-const saturationPush = 5;
-const maxPushSpeed = 118;
-const maxMineralSpeed = 126;
-const maxMineralContactCorrectionPerIteration = 2.4;
-const mineralContactIterations = 10;
-const mineralContactCorrectionRatio = 0.92;
-const mineralContactSlop = 0.02;
-const mineralDampingInsideScoop = 1;
-const physicsSubsteps = 3;
-const maxImpulsePerMineralPerFrame = 36;
+const pushForce = 2.4; // Player push strength baseline for loose physical ore.
+const mineralFriction = 0.88; // Ground damping per frame. Lower makes rocks stop sooner; higher lets them coast.
+const requiredPush = 1; // Minimum push power before a mineral responds strongly.
+const saturationPush = 5; // Push level where response is mostly maxed out.
+const maxPushSpeed = 118; // Mineral speed cap while player is pushing.
+const maxMineralSpeed = 126; // Absolute mineral speed cap, including collisions and collector pull.
 
-const wallBounceFactor = 0.22;
-const wallContactTolerance = 3;
-const stuckFrameThreshold = 24;
-const stuckCorrectionForce = 42;
+// Multiple contact passes keep squeezed minerals from visibly overlapping after
+// the scoop or world walls compress a small pile.
+const maxMineralContactCorrectionPerIteration = 2.4; // Per-pass separation cap. Higher fixes overlaps faster but can jitter.
+const mineralContactIterations = 10; // More passes reduce pile overlap; too many costs CPU.
+const mineralContactCorrectionRatio = 0.92; // Fraction of overlap corrected each pass. Lower is softer.
+const mineralContactSlop = 0.02; // Tiny overlap ignored to prevent constant micro-shaking.
+const mineralDampingInsideScoop = 1; // Extra damping hook for loose ore inside scoop. 1 means no extra damping.
+const physicsSubsteps = 3; // Scoop collision substeps per frame. Higher reduces tunneling at higher CPU cost.
+const maxImpulsePerMineralPerFrame = 36; // Caps shove impulses so squeezed ore cannot launch too violently.
 
-const mineralCounterForceToVehicle = 0;
-const overloadMineralCountThreshold = 8;
-const overloadSpeedPenalty = 0.38;
-const overloadShakeAmount = 0.45;
-const maxVehicleKnockback = 0;
+const wallBounceFactor = 0.22; // Mineral bounce after hitting world walls. Lower feels heavier.
+const wallContactTolerance = 3; // Distance treated as near-wall for stuck checks.
+const stuckFrameThreshold = 24; // Frames before a slow near-wall mineral gets unstuck assistance.
+const stuckCorrectionForce = 42; // Small inward nudge for stuck loose minerals near walls.
 
-const collectorRadius = 56;
-const collectorPullForce = 360;
-const securedUnloadDistance = 74;
-const upgradeCost = 20;
-const upgradedPushForceMultiplier = 2.2;
-const upgradedBladeWidthBonus = 10;
+const mineralCounterForceToVehicle = 0; // Ore-to-vehicle knockback. Keep 0 for stable P0 driving.
+const overloadMineralCountThreshold = 8; // Loose/candidate load count before the vehicle starts feeling heavy.
+const overloadSpeedPenalty = 0.38; // Max slowdown from overload. Higher makes heavy piles slow the vehicle more.
+const overloadShakeAmount = 0.45; // Visual shake when overloaded. Higher is more obvious.
+const maxVehicleKnockback = 0; // Vehicle knockback cap from minerals. Keep 0 unless testing recoil.
 
-const maxScoopCapacity = 20;
-const captureInsideThreshold = 7 / 9;
-const captureDwellTime = 0.12;
-const captureCandidateResetThreshold = 5 / 9;
-const securedOreSloshAmount = 0.12;
-const securedOreSettleSpeed = 34;
-const securedOreRandomOffset = 2.4;
-const securedOreLocalDamping = 0.82;
-const securedOreMaxVisualOffset = 5.5;
-const securedOreJitterAmount = 0.65;
-const deliveredOreDurationMin = 0.28;
-const deliveredOreDurationMax = 0.48;
+const collectorRadius = 56; // Collector range for loose ore pull and direct loose collection.
+const collectorPullForce = 360; // Pull strength for loose ore near collector. Higher vacuums loose ore faster.
+const securedUnloadDistance = 74; // Distance where secured scoop ore starts visible unloading.
+const upgradeCost = 20; // Coins required for the temporary push-power upgrade.
+const upgradedPushForceMultiplier = 2.2; // Upgrade multiplier for pushForce. Higher makes upgraded shove stronger.
+const upgradedBladeWidthBonus = 10; // Extra scoop width after upgrade. Higher catches a wider pile.
+
+// P0.3 capture is deliberately conservative: most of the circle must sit in the
+// scoop for a short dwell before it becomes stable carried ore.
+const maxScoopCapacity = 20; // Logic-only secured ore capacity. Higher lets the scoop carry more visible rocks.
+const captureInsideThreshold = 7 / 9; // Required sample ratio inside load zone. Higher makes capture stricter.
+const captureDwellTime = 0.12; // Seconds a candidate must stay mostly inside before becoming secured.
+const captureCandidateResetThreshold = 5 / 9; // Below this ratio, candidate progress resets to loose ore.
+
+// These values affect only the visible wobble of secured ore. They should sell
+// the fantasy of a loose pile settling in the scoop, not pull rocks inward.
+const securedOreSloshAmount = 0.12; // How much secured ore visually lags behind scoop motion.
+const securedOreSettleSpeed = 34; // How quickly secured ore settles back near its captured local position.
+const securedOreRandomOffset = 2.4; // Capture-time random offset so secured rocks do not form a neat pattern.
+const securedOreLocalDamping = 0.82; // Damps secured slosh velocity. Lower settles faster; higher feels looser.
+const securedOreMaxVisualOffset = 5.5; // Max secured visual slosh from captured position.
+const securedOreJitterAmount = 0.65; // Render-only micro jitter to keep the pile organic.
+const deliveredOreDurationMin = 0.28; // Fastest visible unload flight time to collector.
+const deliveredOreDurationMax = 0.48; // Slowest visible unload flight time to collector.
 
 const canvas = document.getElementById("gameCanvas");
 const ctx = canvas.getContext("2d");
@@ -92,18 +104,24 @@ const messageEl = document.getElementById("message");
 const upgradeButton = document.getElementById("upgradeButton");
 const resetButton = document.getElementById("resetButton");
 
+// World dimensions come from the canvas. world.wall is the solid border inset:
+// larger values make the playable area smaller and keep actors farther inside.
 const world = {
   width: canvas.width,
   height: canvas.height,
   wall: 18,
 };
 
+// Collector is the unload target. x/y set its center; coreRadius affects only
+// the drawn inner circle, while collectorRadius above controls gameplay range.
 const collector = {
   x: world.width / 2,
   y: 72,
   coreRadius: 15,
 };
 
+// Vehicle position, facing, and motion. bodyRadius is the physical body contact
+// size; radius is the larger drawn/footprint size used by wall clamping.
 const vehicle = {
   x: world.width / 2,
   y: world.height - 78,
@@ -117,6 +135,8 @@ const vehicle = {
 };
 
 const bladeTypes = {
+  // Default blade is a passive solid scoop: no magnetism, no one-way lips, no
+  // hidden storage behavior. These fields copy the tuning constants above.
   scoopBlade: {
     key: "scoopBlade",
     width: bladeWidth,
@@ -136,12 +156,15 @@ const bladeTypes = {
 
 const activeBladeType = bladeTypes.scoopBlade;
 
+// Mineral type describes how loose physical ore reacts to pushing. For P0 there
+// is one type, but keeping it grouped makes future ore variants easier to tune.
 const mineralType = {
   requiredPush,
   saturationPush,
   maxPushSpeed,
 };
 
+// Pointer control stores the drag gesture used as a virtual joystick.
 const pointerControl = {
   active: false,
   pointerId: null,
@@ -152,16 +175,16 @@ const pointerControl = {
 };
 
 const keys = new Set();
-const completionTarget = Math.ceil(mineralCount * 0.8);
-let minerals = [];
-let particles = [];
-let coins = 0;
-let collected = 0;
-let upgraded = false;
-let complete = false;
-let lastTime = 0;
-let pushingCount = 0;
-let currentSecuredOre = 0;
+const completionTarget = Math.ceil(mineralCount * 0.8); // Win/checkpoint target. Raising mineralCount raises this too.
+let minerals = []; // All visible ore objects, including loose, secured, and delivery animation states.
+let particles = []; // Short-lived coin/spark feedback dots; visual only.
+let coins = 0; // Spendable currency shown in the HUD and used by the upgrade button.
+let collected = 0; // Total delivered ore count for progress display/completion.
+let upgraded = false; // One-shot P0 upgrade flag for push power and blade width.
+let complete = false; // Completion banner flag once collected reaches completionTarget.
+let lastTime = 0; // Previous animation timestamp for delta-time physics.
+let pushingCount = 0; // Number of loose/candidate minerals currently contacting the scoop lips.
+let currentSecuredOre = 0; // Current secured scoop load, displayed as Scoop: current/maxScoopCapacity.
 
 function resetGame() {
   vehicle.x = world.width / 2;
@@ -191,31 +214,33 @@ function createMinerals() {
 
   while (spawned.length < mineralCount && attempts < mineralCount * 80) {
     attempts += 1;
+    // Each mineral keeps both physics data and P0.3 scoop-state data. The
+    // secured/delivery fields stay dormant while the mineral is loose.
     const mineral = {
       x: random(world.wall + 28, world.width - world.wall - 28),
       y: random(collector.y + collectorRadius + 42, world.height - world.wall - 44),
       vx: 0,
       vy: 0,
       radius: 7,
-      shake: 0,
-      stuckFrames: 0,
-      containedInScoop: false,
-      containGrace: 0,
-      state: mineralState.looseOre,
-      captureDwell: 0,
-      insideRatio: 0,
-      securedLocalX: 0,
-      securedLocalY: 0,
-      securedOffsetX: 0,
-      securedOffsetY: 0,
-      securedVx: 0,
-      securedVy: 0,
-      securedSeed: random(0, Math.PI * 2),
-      deliveryAge: 0,
-      deliveryDuration: 0,
-      deliveryStartX: 0,
-      deliveryStartY: 0,
-      drawScale: 1,
+      shake: 0, // Visual hit feedback timer.
+      stuckFrames: 0, // Counts slow near-wall frames before unstuck correction.
+      containedInScoop: false, // Loose-ore stability hint, not secured capacity.
+      containGrace: 0, // Hysteresis countdown after briefly leaving the scoop area.
+      state: mineralState.looseOre, // Main lifecycle: loose -> candidate -> secured -> delivered.
+      captureDwell: 0, // Seconds spent mostly inside the scoop load zone.
+      insideRatio: 0, // Last 9-point inside score, used for capture priority/debugging.
+      securedLocalX: 0, // Captured x in blade-local space so ore rides with the moving scoop.
+      securedLocalY: 0, // Captured y in blade-local space; preserves irregular pile placement.
+      securedOffsetX: 0, // Visual slosh offset from captured local x.
+      securedOffsetY: 0, // Visual slosh offset from captured local y.
+      securedVx: 0, // Local slosh velocity x for secured ore.
+      securedVy: 0, // Local slosh velocity y for secured ore.
+      securedSeed: random(0, Math.PI * 2), // Per-rock phase so render jitter is not synchronized.
+      deliveryAge: 0, // Seconds elapsed in visible unload animation.
+      deliveryDuration: 0, // Total unload animation duration for this rock.
+      deliveryStartX: 0, // World-space unload start x.
+      deliveryStartY: 0, // World-space unload start y.
+      drawScale: 1, // Shrinks delivered ore as it flows into collector.
       type: mineralType,
     };
 
@@ -386,6 +411,8 @@ function updateContainedState(mineral, blade) {
   const clearlyPastSide = Math.abs(state.local.y) > state.halfWidth + mineral.radius + sideEscapeMargin + containedStateHysteresis;
   const clearlyBehindBack = state.local.x < state.bladeStart - mineral.radius - containedStateHysteresis;
 
+  // This hysteresis is a stability hint for loose ore near the scoop. It is not
+  // a suction force and does not move minerals by itself.
   if (state.insideScoop) {
     mineral.containedInScoop = true;
     mineral.containGrace = containedStateHysteresis;
@@ -420,6 +447,8 @@ function applyBladeLipCollisions(dt, blade = getCurrentBladeConfig(), allowBackP
   let loadCount = 0;
   const subDt = dt / physicsSubsteps;
 
+  // The lips are solid moving barriers. Substeps reduce tunneling when the
+  // vehicle or a crowded mineral pile changes position quickly.
   for (let step = 0; step < physicsSubsteps; step += 1) {
     for (const mineral of minerals) {
       if (!isPhysicalOre(mineral)) continue;
@@ -463,6 +492,8 @@ function resolveSolidLipContact(mineral, blade, contact, dt, pushResponse, impul
   const friction = contact.kind === "back" ? blade.innerBackLipFriction : blade.sideLipFriction;
   applyMovingWallVelocityResponse(mineral, normal, restitution, friction);
 
+  // Back-lip contact is the main physical shove. Side lips only block and let
+  // minerals slide along them.
   if (contact.kind === "back" && allowBackPush && pushResponse.accelScale > 0 && impulseBudget) {
     const forwardDot = normal.x * vehicle.dirX + normal.y * vehicle.dirY;
     if (forwardDot > 0.35) {
@@ -478,6 +509,8 @@ function applyMovingWallVelocityResponse(mineral, normal, restitution, friction)
   let relY = mineral.vy - vehicle.vy;
   const normalSpeed = relX * normal.x + relY * normal.y;
 
+  // Work in relative velocity so a moving scoop lip can carry/push minerals
+  // without adding a magnetic-looking pull.
   if (normalSpeed < 0) {
     relX -= (1 + restitution) * normalSpeed * normal.x;
     relY -= (1 + restitution) * normalSpeed * normal.y;
@@ -564,6 +597,8 @@ function getBladeLipColliders(blade, state) {
   const backRadius = blade.innerBackLipThickness / 2;
   const cornerRadius = Math.max(sideRadius, backRadius);
 
+  // The scoop is modeled as a U-shaped set of thick capsules. The corner caps
+  // close the rear joints so small minerals cannot leak through numerical gaps.
   return [
     {
       type: "segment",
@@ -636,6 +671,9 @@ function getLipContactFromClosestPoint(mineral, collider, local, closestX, close
 
   const distanceBetween = Math.sqrt(distanceSq);
   const fallback = getLipFallbackNormal(collider, local, state);
+
+  // When a mineral center sits exactly on the collider centerline, the normal is
+  // ambiguous; fallback normals keep overlap resolution deterministic.
   const normal = distanceBetween > 0.001
     ? { x: dx / distanceBetween, y: dy / distanceBetween }
     : fallback;
@@ -691,6 +729,8 @@ function applyMineralImpulse(mineral, impulseX, impulseY, impulseBudget) {
   const remaining = maxImpulsePerMineralPerFrame - used;
   if (remaining <= 0) return;
 
+  // A per-frame impulse budget prevents one squeezed mineral from getting an
+  // explosive launch after several contacts resolve in the same frame.
   const limited = capVector(impulseX, impulseY, remaining);
   mineral.vx += limited.x;
   mineral.vy += limited.y;
@@ -741,6 +781,9 @@ function capMineralSpeed(mineral, speedCap) {
 
 function updateSecuredOre(mineral, blade, dt) {
   const localVehicleVelocity = worldVectorToBladeLocal(vehicle.vx, vehicle.vy);
+
+  // Secured ore is stable logic, but visually it still has inertia relative to
+  // the scoop so the carried pile feels loose rather than frozen.
   mineral.securedVx += (-localVehicleVelocity.x * securedOreSloshAmount - mineral.securedOffsetX * securedOreSettleSpeed) * dt;
   mineral.securedVy += (-localVehicleVelocity.y * securedOreSloshAmount - mineral.securedOffsetY * securedOreSettleSpeed) * dt;
 
@@ -773,6 +816,8 @@ function updateDeliveredOre(mineral, index, dt) {
   const eased = 1 - Math.pow(1 - t, 2.2);
   const arc = Math.sin(t * Math.PI) * 10;
 
+  // Delivery stays visible: secured rocks flow into the collector before they
+  // become coins, avoiding a hidden inventory conversion.
   mineral.x = mineral.deliveryStartX + (collector.x - mineral.deliveryStartX) * eased;
   mineral.y = mineral.deliveryStartY + (collector.y - mineral.deliveryStartY) * eased - arc;
   mineral.drawScale = 1 - t * 0.62;
@@ -792,6 +837,8 @@ function updateScoopCaptureCandidates(blade, dt) {
     const score = getScoopInsideScore(mineral, blade);
     mineral.insideRatio = score.insideRatio;
 
+    // Full scoop means no new secured ore. The mineral remains physical and can
+    // still be pushed around by the blade.
     if (capacityLeft <= 0 || score.insideRatio < captureCandidateResetThreshold) {
       mineral.state = mineralState.looseOre;
       mineral.captureDwell = 0;
@@ -836,6 +883,8 @@ function getScoopInsideScore(mineral, blade) {
   let inside = 0;
   const points = getMineralSamplePoints(mineral);
 
+  // Nine point sampling is a cheap approximation of "mostly inside" for P0.
+  // It avoids instant capture from a single edge touch.
   for (const point of points) {
     const local = worldToBladeLocal(point.x, point.y);
     if (isPointInsideScoopLoadZone(local, blade, mineral.radius)) inside += 1;
@@ -870,6 +919,8 @@ function isPointInsideScoopLoadZone(local, blade, mineralRadius = 0) {
   const backPadding = Math.max(blade.innerBackLipThickness * 0.45, 3);
   const frontPadding = Math.max(mineralRadius * 0.2, 1);
 
+  // The load zone follows the scoop shape and leaves the mouth open; it is not
+  // a rectangular cargo box.
   return (
     local.x >= bladeStart + backPadding &&
     local.x <= bladeEnd - frontPadding &&
@@ -883,6 +934,8 @@ function secureMineral(mineral, blade) {
   const randomY = random(-securedOreRandomOffset, securedOreRandomOffset);
   const securedLocal = clampSecuredOreLocalPosition(local.x + randomX, local.y + randomY, mineral.radius, blade);
 
+  // Preserve the captured local position so secured ore looks like the pile the
+  // player actually scooped, not a snapped or centered storage item.
   mineral.state = mineralState.securedOre;
   mineral.captureDwell = 0;
   mineral.insideRatio = 1;
@@ -907,6 +960,8 @@ function clampSecuredOreLocalPosition(localX, localY, radius, blade) {
   const backPadding = blade.innerBackLipThickness * 0.55 + radius * 0.2;
   const frontPadding = radius * 0.65;
 
+  // Keep secured visuals behind the open mouth and inside the lips while still
+  // allowing irregular positions within that scoop-shaped space.
   return {
     x: clamp(localX, bladeStart + backPadding, bladeEnd - frontPadding),
     y: clamp(localY, -halfWidth + sidePadding, halfWidth - sidePadding),
@@ -916,6 +971,8 @@ function clampSecuredOreLocalPosition(localX, localY, radius, blade) {
 function tryStartSecuredOreDelivery() {
   if (currentSecuredOre <= 0) return;
 
+  // Unload when either the vehicle body or the carried scoop pile reaches the
+  // collector, which feels better than requiring a precise center overlap.
   const scoopNose = bladeLocalToWorld(getBladeStart() + getCurrentBladeConfig().length * 0.55, 0);
   const vehicleDistance = distance(vehicle.x, vehicle.y, collector.x, collector.y);
   const scoopDistance = distance(scoopNose.x, scoopNose.y, collector.x, collector.y);
@@ -965,6 +1022,10 @@ function updateMinerals(dt) {
 
   for (let i = minerals.length - 1; i >= 0; i -= 1) {
     const mineral = minerals[i];
+
+    // Each ore state owns its own movement model: delivered ore animates out,
+    // secured ore rides with the scoop, and only loose/candidate ore remains
+    // fully physical on the ground.
     if (mineral.state === mineralState.deliveredOre) {
       updateDeliveredOre(mineral, i, dt);
       continue;
@@ -1010,6 +1071,9 @@ function updateMinerals(dt) {
 
   resolveMineralContacts();
   syncScoopLoadCount();
+
+  // Capture is evaluated after physics so minerals must actually settle into
+  // the scoop for a moment before becoming secured.
   updateScoopCaptureCandidates(blade, dt);
   tryStartSecuredOreDelivery();
   syncScoopLoadCount();
@@ -1087,6 +1151,8 @@ function getWallInwardVector(mineral) {
 }
 
 function resolveMineralContacts() {
+  // Contact solving is iterative instead of perfect. More small passes look
+  // steadier than one large correction when many minerals are squeezed together.
   for (let iteration = 0; iteration < mineralContactIterations; iteration += 1) {
     for (let i = 0; i < minerals.length; i += 1) {
       for (let j = i + 1; j < minerals.length; j += 1) {
@@ -1369,6 +1435,8 @@ function getMineralDrawPosition(mineral) {
     return { x: mineral.x, y: mineral.y };
   }
 
+  // Jitter is render-only. It breaks up perfect arrangements without changing
+  // the secured ore's actual captured local position.
   const time = performance.now() * 0.006 + mineral.securedSeed;
   const jitterX = Math.sin(time * 1.7) * securedOreJitterAmount;
   const jitterY = Math.cos(time * 1.3) * securedOreJitterAmount;
@@ -1446,6 +1514,8 @@ function getBladeStart() {
 }
 
 function worldToBladeLocal(x, y) {
+  // Blade-local x points forward through the scoop mouth; y spans left/right
+  // across the lips. Most scoop logic is easier in this frame.
   const forwardX = vehicle.dirX;
   const forwardY = vehicle.dirY;
   const sideX = -forwardY;
@@ -1460,6 +1530,8 @@ function worldToBladeLocal(x, y) {
 }
 
 function localToWorldVector(x, y) {
+  // Converts a direction or offset from blade-local space back to world space.
+  // Positions still need the vehicle origin added afterward.
   const forwardX = vehicle.dirX;
   const forwardY = vehicle.dirY;
   const sideX = -forwardY;
@@ -1472,6 +1544,7 @@ function localToWorldVector(x, y) {
 }
 
 function worldVectorToBladeLocal(x, y) {
+  // Vector conversion skips translation; this is used for velocities and slosh.
   const forwardX = vehicle.dirX;
   const forwardY = vehicle.dirY;
   const sideX = -forwardY;
@@ -1484,6 +1557,7 @@ function worldVectorToBladeLocal(x, y) {
 }
 
 function bladeLocalToWorld(x, y) {
+  // Full position conversion for points captured relative to the moving scoop.
   const offset = localToWorldVector(x, y);
   return {
     x: vehicle.x + offset.x,
@@ -1517,6 +1591,8 @@ function clampToWalls(body, radius) {
 }
 
 function clampVehicleAndBladeToWalls(blade = getCurrentBladeConfig()) {
+  // Wall limits use the combined vehicle+scoop footprint, so the scoop cannot
+  // pass through walls while the body remains inside.
   const correction = getVehicleAndBladeWallCorrection(blade);
   vehicle.x += correction.x;
   vehicle.y += correction.y;
@@ -1557,6 +1633,8 @@ function getVehicleAndBladeWorldBounds(blade) {
     maxY: -Infinity,
   };
 
+  // A small set of endpoint circles is enough for wall clamping because the
+  // scoop is convex in each facing direction and the lips are straight segments.
   expandBoundsWithLocalCircle(bounds, 0, 0, vehicle.radius);
   expandBoundsWithLocalCircle(bounds, bladeStart, -halfWidth, cornerRadius);
   expandBoundsWithLocalCircle(bounds, bladeStart, halfWidth, cornerRadius);

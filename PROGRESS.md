@@ -44,6 +44,19 @@ P0.3 is a playable mining scoop prototype. The default scoop blade should behave
 
 ## Latest Change
 
+Added code comments for the current P0.3 prototype so future sessions and manual tuning are easier to follow.
+
+Commenting focus:
+
+- top-level tuning constants now explain what each value controls and what increasing/decreasing it tends to change
+- runtime counters such as `coins`, `collected`, and `currentSecuredOre` now explain their gameplay meaning
+- mineral state fields now explain physical, capture, secured, and delivery data
+- important physics/capture/render functions now explain design intent rather than only code mechanics
+- `index.html` and `style.css` now include brief structure comments for HUD/canvas/layout assumptions
+- `WORKFLOW.md` now records the durable rule to document tuning constants with their meaning and tuning effect
+
+Previous gameplay implementation:
+
 Implemented the P0.3 secured scoop handling model while preserving the push-mining visual fantasy.
 
 Important implementation points in `main.js`:

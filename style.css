@@ -18,12 +18,14 @@ body {
 }
 
 .prototype-shell {
+  /* Keep the P0 play surface phone-sized even on desktop. */
   width: min(420px, 100%);
   display: grid;
   gap: 10px;
 }
 
 .top-bar {
+  /* Four compact HUD cells map to the four status values in index.html. */
   display: grid;
   grid-template-columns: repeat(4, 1fr);
   gap: 8px;
@@ -53,6 +55,7 @@ body {
 }
 
 #gameCanvas {
+  /* CSS scales the canvas visually; main.js still runs in the fixed 360 x 640 coordinate system. */
   width: 100%;
   max-height: calc(100vh - 170px);
   aspect-ratio: 9 / 16;

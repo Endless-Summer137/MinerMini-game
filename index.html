@@ -8,6 +8,7 @@
 </head>
 <body>
   <main class="prototype-shell">
+    <!-- HUD values are updated from main.js: coins, total delivered ore, push upgrade, and scoop capacity. -->
     <section class="top-bar" aria-label="Prototype status">
       <div class="stat">
         <span>Coins</span>
@@ -27,8 +28,10 @@
       </div>
     </section>
 
+    <!-- Fixed 9:16 prototype canvas. Gameplay coordinates in main.js use this 360 x 640 world size. -->
     <canvas id="gameCanvas" width="360" height="640" tabindex="0" aria-label="Mining push prototype"></canvas>
 
+    <!-- P0 controls only: one temporary upgrade and reset. No production progression systems yet. -->
     <section class="controls" aria-label="Prototype controls">
       <button id="upgradeButton" type="button" disabled>Push Power Upgrade - 20</button>
       <button id="resetButton" type="button">Reset</button>
