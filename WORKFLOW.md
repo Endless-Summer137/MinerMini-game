@@ -25,6 +25,12 @@ After each completed, verified small task:
 - Half-finished exploratory edits unless explicitly requested.
 - Unverified changes that are still in active investigation.
 
+## Code Comments
+
+- Add concise comments for code that is hard for the user to read later, especially physics response, state transitions, coordinate transforms, capture rules, and tuning constants.
+- Comments should explain intent or design constraints, not restate obvious code mechanics.
+- Prefer a few helpful comments near important logic over dense line-by-line annotation.
+
 ## Branch and PR Habit
 
 - Small, self-contained fixes may be committed and pushed directly when that matches the current working style.

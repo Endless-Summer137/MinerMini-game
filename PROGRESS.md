@@ -117,5 +117,6 @@ Default collaboration rule:
 - Update `PROGRESS.md` when the current state, design decisions, validation status, or next steps changed.
 - Update `README.md` only when the setup flow, public project description, or usage guidance changed.
 - Update `WORKFLOW.md` when a durable repository rule changes.
+- Add concise intent comments around non-obvious physics, state, coordinate, and tuning logic so the user can read the code later.
 - Commit and push coherent finished changes to GitHub.
 - Do not push half-finished exploratory edits unless explicitly requested.
