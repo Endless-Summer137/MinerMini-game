@@ -81,3 +81,14 @@ Important implementation points in `main.js`:
    - add debug collision overlay toggle
    - improve mineral pile stability under high load
 
+## Workflow Agreement
+
+This repository is the source of truth across Codex conversations.
+
+Default collaboration rule:
+
+- After each completed, verified small task, update the local project files first.
+- Update `PROGRESS.md` when the current state, design decisions, validation status, or next steps changed.
+- Update `README.md` only when the setup flow, public project description, or usage guidance changed.
+- Commit and push coherent finished changes to GitHub.
+- Do not push half-finished exploratory edits unless explicitly requested.
