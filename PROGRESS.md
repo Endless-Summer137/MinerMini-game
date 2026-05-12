@@ -68,18 +68,15 @@ Important implementation points in `main.js`:
 
 - This is still a lightweight custom canvas physics prototype, not a full physics engine.
 - There is no automated test file yet; the physics assertions were run as an ad hoc VM script.
-- The project folder was not originally a Git repository.
-- GitHub remote has not been created yet because GitHub CLI `gh` is not installed and the GitHub plugin currently cannot create a brand-new repository.
+- The project folder started as a standalone local prototype and is still early in its tooling maturity.
+- There is not yet a repeatable automated regression test harness for scoop/mineral behavior.
 
 ## Recommended Next Steps
 
-1. Create a private GitHub repo named `MinerMini-game`.
-2. Push this local repository to it.
-3. Optionally add GitHub issues for:
-   - add repeatable physics regression tests
-   - tune scoop lip friction and restitution after playtesting
-   - add debug collision overlay toggle
-   - improve mineral pile stability under high load
+1. Add repeatable physics regression tests for scoop lip containment.
+2. Tune scoop lip friction and restitution after more playtesting.
+3. Add a debug collision overlay toggle.
+4. Improve mineral pile stability under high load.
 
 ## Workflow Agreement
 
@@ -90,5 +87,6 @@ Default collaboration rule:
 - After each completed, verified small task, update the local project files first.
 - Update `PROGRESS.md` when the current state, design decisions, validation status, or next steps changed.
 - Update `README.md` only when the setup flow, public project description, or usage guidance changed.
+- Update `WORKFLOW.md` when a durable repository rule changes.
 - Commit and push coherent finished changes to GitHub.
 - Do not push half-finished exploratory edits unless explicitly requested.

@@ -19,3 +19,7 @@ Then open `http://127.0.0.1:8000/index.html`.
 ## Project Memory
 
 Use `PROGRESS.md` as the handoff document between Codex sessions. It records the current design decisions, implementation status, and the next likely work.
+
+## Repository Workflow
+
+Use `WORKFLOW.md` for durable collaboration rules such as when to update docs, when to commit, and when to push to GitHub. If a new standing rule is agreed in chat, it should be added there and pushed to the repository.
