@@ -1,0 +1,38 @@
+﻿<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Miner Mini P0</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <main class="prototype-shell">
+    <section class="top-bar" aria-label="Prototype status">
+      <div class="stat">
+        <span>Coins</span>
+        <strong id="coins">0</strong>
+      </div>
+      <div class="stat">
+        <span>Collected</span>
+        <strong id="collected">0 / 0</strong>
+      </div>
+      <div class="stat">
+        <span>Push</span>
+        <strong id="pushState">Base</strong>
+      </div>
+    </section>
+
+    <canvas id="gameCanvas" width="360" height="640" tabindex="0" aria-label="Mining push prototype"></canvas>
+
+    <section class="controls" aria-label="Prototype controls">
+      <button id="upgradeButton" type="button" disabled>Push Power Upgrade - 20</button>
+      <button id="resetButton" type="button">Reset</button>
+    </section>
+
+    <p id="message" class="message">Push minerals into the collector.</p>
+  </main>
+
+  <script src="main.js"></script>
+</body>
+</html>
