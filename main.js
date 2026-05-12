@@ -1,4 +1,11 @@
 ﻿const mineralCount = 60;
+const mineralState = {
+  looseOre: "looseOre",
+  captureCandidate: "captureCandidate",
+  securedOre: "securedOre",
+  deliveredOre: "deliveredOre",
+};
+
 const vehicleSpeed = 175;
 const joystickMaxRadius = 86;
 const inputDeadZone = 8;
@@ -57,15 +64,30 @@ const maxVehicleKnockback = 0;
 
 const collectorRadius = 56;
 const collectorPullForce = 360;
+const securedUnloadDistance = 74;
 const upgradeCost = 20;
 const upgradedPushForceMultiplier = 2.2;
 const upgradedBladeWidthBonus = 10;
+
+const maxScoopCapacity = 20;
+const captureInsideThreshold = 7 / 9;
+const captureDwellTime = 0.12;
+const captureCandidateResetThreshold = 5 / 9;
+const securedOreSloshAmount = 0.12;
+const securedOreSettleSpeed = 34;
+const securedOreRandomOffset = 2.4;
+const securedOreLocalDamping = 0.82;
+const securedOreMaxVisualOffset = 5.5;
+const securedOreJitterAmount = 0.65;
+const deliveredOreDurationMin = 0.28;
+const deliveredOreDurationMax = 0.48;
 
 const canvas = document.getElementById("gameCanvas");
 const ctx = canvas.getContext("2d");
 const coinsEl = document.getElementById("coins");
 const collectedEl = document.getElementById("collected");
 const pushStateEl = document.getElementById("pushState");
+const scoopStateEl = document.getElementById("scoopState");
 const messageEl = document.getElementById("message");
 const upgradeButton = document.getElementById("upgradeButton");
 const resetButton = document.getElementById("resetButton");
@@ -139,6 +161,7 @@ let upgraded = false;
 let complete = false;
 let lastTime = 0;
 let pushingCount = 0;
+let currentSecuredOre = 0;
 
 function resetGame() {
   vehicle.x = world.width / 2;
@@ -155,6 +178,7 @@ function resetGame() {
   upgraded = false;
   complete = false;
   pushingCount = 0;
+  currentSecuredOre = 0;
   lastTime = performance.now();
   messageEl.textContent = "Drag on the canvas to scoop minerals into the collector.";
   canvas.focus();
@@ -177,6 +201,21 @@ function createMinerals() {
       stuckFrames: 0,
       containedInScoop: false,
       containGrace: 0,
+      state: mineralState.looseOre,
+      captureDwell: 0,
+      insideRatio: 0,
+      securedLocalX: 0,
+      securedLocalY: 0,
+      securedOffsetX: 0,
+      securedOffsetY: 0,
+      securedVx: 0,
+      securedVy: 0,
+      securedSeed: random(0, Math.PI * 2),
+      deliveryAge: 0,
+      deliveryDuration: 0,
+      deliveryStartX: 0,
+      deliveryStartY: 0,
+      drawScale: 1,
       type: mineralType,
     };
 
@@ -296,6 +335,7 @@ function separateVehicleBodyFromMinerals(dt) {
   const body = { x: vehicle.x, y: vehicle.y, radius: vehicle.bodyRadius };
 
   for (const mineral of minerals) {
+    if (!isPhysicalOre(mineral)) continue;
     const hit = getOverlap(body, mineral);
     if (!hit) continue;
 
@@ -327,7 +367,17 @@ function countScoopLoad(blade) {
 }
 
 function isMineralInScoopInfluence(mineral, blade) {
+  if (mineral.state === mineralState.securedOre) return true;
+  if (!isPhysicalOre(mineral)) return false;
   return getScoopLocalState(mineral, blade).nearScoop;
+}
+
+function isPhysicalOre(mineral) {
+  return mineral.state === mineralState.looseOre || mineral.state === mineralState.captureCandidate;
+}
+
+function syncScoopLoadCount() {
+  currentSecuredOre = minerals.reduce((count, mineral) => count + (mineral.state === mineralState.securedOre ? 1 : 0), 0);
 }
 
 function updateContainedState(mineral, blade) {
@@ -372,6 +422,7 @@ function applyBladeLipCollisions(dt, blade = getCurrentBladeConfig(), allowBackP
 
   for (let step = 0; step < physicsSubsteps; step += 1) {
     for (const mineral of minerals) {
+      if (!isPhysicalOre(mineral)) continue;
       const result = resolveBladeLipContactsForMineral(mineral, blade, subDt, pushResponse, impulseBudget, allowBackPush);
       if (step === 0 && result.inLoadZone) loadCount += 1;
       capMineralSpeed(mineral, allowBackPush ? pushResponse.speedCap : maxMineralSpeed);
@@ -688,12 +739,242 @@ function capMineralSpeed(mineral, speedCap) {
   mineral.vy *= scale;
 }
 
+function updateSecuredOre(mineral, blade, dt) {
+  const localVehicleVelocity = worldVectorToBladeLocal(vehicle.vx, vehicle.vy);
+  mineral.securedVx += (-localVehicleVelocity.x * securedOreSloshAmount - mineral.securedOffsetX * securedOreSettleSpeed) * dt;
+  mineral.securedVy += (-localVehicleVelocity.y * securedOreSloshAmount - mineral.securedOffsetY * securedOreSettleSpeed) * dt;
+
+  const damping = Math.pow(securedOreLocalDamping, dt * 60);
+  mineral.securedVx *= damping;
+  mineral.securedVy *= damping;
+  mineral.securedOffsetX += mineral.securedVx * dt;
+  mineral.securedOffsetY += mineral.securedVy * dt;
+
+  const capped = capVector(mineral.securedOffsetX, mineral.securedOffsetY, securedOreMaxVisualOffset);
+  mineral.securedOffsetX = capped.x;
+  mineral.securedOffsetY = capped.y;
+
+  const local = clampSecuredOreLocalPosition(
+    mineral.securedLocalX + mineral.securedOffsetX,
+    mineral.securedLocalY + mineral.securedOffsetY,
+    mineral.radius,
+    blade
+  );
+  const worldPos = bladeLocalToWorld(local.x, local.y);
+  mineral.x = worldPos.x;
+  mineral.y = worldPos.y;
+  mineral.vx = vehicle.vx;
+  mineral.vy = vehicle.vy;
+}
+
+function updateDeliveredOre(mineral, index, dt) {
+  mineral.deliveryAge += dt;
+  const t = clamp(mineral.deliveryAge / Math.max(mineral.deliveryDuration, 0.001), 0, 1);
+  const eased = 1 - Math.pow(1 - t, 2.2);
+  const arc = Math.sin(t * Math.PI) * 10;
+
+  mineral.x = mineral.deliveryStartX + (collector.x - mineral.deliveryStartX) * eased;
+  mineral.y = mineral.deliveryStartY + (collector.y - mineral.deliveryStartY) * eased - arc;
+  mineral.drawScale = 1 - t * 0.62;
+
+  if (t >= 1) {
+    collectDeliveredMineral(index, mineral.x, mineral.y);
+  }
+}
+
+function updateScoopCaptureCandidates(blade, dt) {
+  const candidates = [];
+  const capacityLeft = maxScoopCapacity - currentSecuredOre;
+
+  for (const mineral of minerals) {
+    if (!isPhysicalOre(mineral)) continue;
+
+    const score = getScoopInsideScore(mineral, blade);
+    mineral.insideRatio = score.insideRatio;
+
+    if (capacityLeft <= 0 || score.insideRatio < captureCandidateResetThreshold) {
+      mineral.state = mineralState.looseOre;
+      mineral.captureDwell = 0;
+      continue;
+    }
+
+    if (score.insideRatio >= captureInsideThreshold) {
+      mineral.state = mineralState.captureCandidate;
+      mineral.captureDwell += dt;
+
+      if (mineral.captureDwell >= captureDwellTime) {
+        candidates.push(mineral);
+      }
+    } else {
+      mineral.state = mineralState.looseOre;
+      mineral.captureDwell = Math.max(0, mineral.captureDwell - dt * 2);
+    }
+  }
+
+  if (capacityLeft <= 0 || candidates.length === 0) return;
+
+  candidates.sort((a, b) => {
+    const ratioDiff = b.insideRatio - a.insideRatio;
+    if (Math.abs(ratioDiff) > 0.01) return ratioDiff;
+    return b.captureDwell - a.captureDwell;
+  });
+
+  let slots = capacityLeft;
+  for (const mineral of candidates) {
+    if (slots <= 0) {
+      mineral.state = mineralState.looseOre;
+      mineral.captureDwell = 0;
+      continue;
+    }
+
+    secureMineral(mineral, blade);
+    slots -= 1;
+  }
+}
+
+function getScoopInsideScore(mineral, blade) {
+  let inside = 0;
+  const points = getMineralSamplePoints(mineral);
+
+  for (const point of points) {
+    const local = worldToBladeLocal(point.x, point.y);
+    if (isPointInsideScoopLoadZone(local, blade, mineral.radius)) inside += 1;
+  }
+
+  return {
+    inside,
+    total: points.length,
+    insideRatio: inside / points.length,
+  };
+}
+
+function getMineralSamplePoints(mineral) {
+  const points = [{ x: mineral.x, y: mineral.y }];
+
+  for (let i = 0; i < 8; i += 1) {
+    const angle = (Math.PI * 2 * i) / 8;
+    points.push({
+      x: mineral.x + Math.cos(angle) * mineral.radius,
+      y: mineral.y + Math.sin(angle) * mineral.radius,
+    });
+  }
+
+  return points;
+}
+
+function isPointInsideScoopLoadZone(local, blade, mineralRadius = 0) {
+  const bladeStart = getBladeStart();
+  const bladeEnd = bladeStart + blade.length;
+  const halfWidth = blade.width / 2;
+  const sidePadding = Math.max(blade.sideLipThickness * 0.48, 4);
+  const backPadding = Math.max(blade.innerBackLipThickness * 0.45, 3);
+  const frontPadding = Math.max(mineralRadius * 0.2, 1);
+
+  return (
+    local.x >= bladeStart + backPadding &&
+    local.x <= bladeEnd - frontPadding &&
+    Math.abs(local.y) <= halfWidth - sidePadding
+  );
+}
+
+function secureMineral(mineral, blade) {
+  const local = worldToBladeLocal(mineral.x, mineral.y);
+  const randomX = random(-securedOreRandomOffset, securedOreRandomOffset);
+  const randomY = random(-securedOreRandomOffset, securedOreRandomOffset);
+  const securedLocal = clampSecuredOreLocalPosition(local.x + randomX, local.y + randomY, mineral.radius, blade);
+
+  mineral.state = mineralState.securedOre;
+  mineral.captureDwell = 0;
+  mineral.insideRatio = 1;
+  mineral.securedLocalX = securedLocal.x;
+  mineral.securedLocalY = securedLocal.y;
+  mineral.securedOffsetX = 0;
+  mineral.securedOffsetY = 0;
+  mineral.securedVx = 0;
+  mineral.securedVy = 0;
+  mineral.vx = vehicle.vx;
+  mineral.vy = vehicle.vy;
+  mineral.containedInScoop = true;
+  mineral.containGrace = containedStateHysteresis;
+  currentSecuredOre += 1;
+}
+
+function clampSecuredOreLocalPosition(localX, localY, radius, blade) {
+  const bladeStart = getBladeStart();
+  const bladeEnd = bladeStart + blade.length;
+  const halfWidth = blade.width / 2;
+  const sidePadding = blade.sideLipThickness * 0.5 + radius * 0.25;
+  const backPadding = blade.innerBackLipThickness * 0.55 + radius * 0.2;
+  const frontPadding = radius * 0.65;
+
+  return {
+    x: clamp(localX, bladeStart + backPadding, bladeEnd - frontPadding),
+    y: clamp(localY, -halfWidth + sidePadding, halfWidth - sidePadding),
+  };
+}
+
+function tryStartSecuredOreDelivery() {
+  if (currentSecuredOre <= 0) return;
+
+  const scoopNose = bladeLocalToWorld(getBladeStart() + getCurrentBladeConfig().length * 0.55, 0);
+  const vehicleDistance = distance(vehicle.x, vehicle.y, collector.x, collector.y);
+  const scoopDistance = distance(scoopNose.x, scoopNose.y, collector.x, collector.y);
+  if (Math.min(vehicleDistance, scoopDistance) > securedUnloadDistance) return;
+
+  for (const mineral of minerals) {
+    if (mineral.state !== mineralState.securedOre) continue;
+    startSecuredOreDelivery(mineral);
+  }
+
+  syncScoopLoadCount();
+  messageEl.textContent = "Ore unloaded.";
+  updateHud();
+}
+
+function startSecuredOreDelivery(mineral) {
+  const drawPos = getMineralDrawPosition(mineral);
+  mineral.state = mineralState.deliveredOre;
+  mineral.deliveryAge = 0;
+  mineral.deliveryDuration = random(deliveredOreDurationMin, deliveredOreDurationMax);
+  mineral.deliveryStartX = drawPos.x;
+  mineral.deliveryStartY = drawPos.y;
+  mineral.x = drawPos.x;
+  mineral.y = drawPos.y;
+  mineral.vx = 0;
+  mineral.vy = 0;
+  mineral.drawScale = 1;
+}
+
+function collectDeliveredMineral(index, x, y) {
+  minerals.splice(index, 1);
+  coins += 1;
+  collected += 1;
+  spawnCollectFeedback(x, y);
+
+  if (!complete && collected >= completionTarget) {
+    complete = true;
+    messageEl.textContent = "Area Cleared.";
+  }
+
+  updateHud();
+}
+
 function updateMinerals(dt) {
   const blade = getCurrentBladeConfig();
   const passiveScoopResponse = { accelScale: 0, speedCap: maxMineralSpeed };
 
   for (let i = minerals.length - 1; i >= 0; i -= 1) {
     const mineral = minerals[i];
+    if (mineral.state === mineralState.deliveredOre) {
+      updateDeliveredOre(mineral, i, dt);
+      continue;
+    }
+
+    if (mineral.state === mineralState.securedOre) {
+      updateSecuredOre(mineral, blade, dt);
+      continue;
+    }
+
     applyStuckCorrection(mineral, dt);
 
     const toCollectorX = collector.x - mineral.x;
@@ -728,6 +1009,11 @@ function updateMinerals(dt) {
   }
 
   resolveMineralContacts();
+  syncScoopLoadCount();
+  updateScoopCaptureCandidates(blade, dt);
+  tryStartSecuredOreDelivery();
+  syncScoopLoadCount();
+  updateHud();
 }
 
 function resolveWallContact(mineral) {
@@ -806,6 +1092,7 @@ function resolveMineralContacts() {
       for (let j = i + 1; j < minerals.length; j += 1) {
         const a = minerals[i];
         const b = minerals[j];
+        if (!isPhysicalOre(a) || !isPhysicalOre(b)) continue;
         const hit = getOverlap(a, b);
         if (!hit) continue;
 
@@ -830,11 +1117,13 @@ function resolveMineralContacts() {
     }
 
     for (const mineral of minerals) {
+      if (!isPhysicalOre(mineral)) continue;
       resolveWallContact(mineral);
     }
   }
 
   for (const mineral of minerals) {
+    if (!isPhysicalOre(mineral)) continue;
     capMineralSpeed(mineral, maxMineralSpeed);
   }
 }
@@ -888,6 +1177,7 @@ function updateHud() {
   coinsEl.textContent = coins;
   collectedEl.textContent = `${collected} / ${mineralCount}`;
   pushStateEl.textContent = upgraded ? "Upgraded" : "Base";
+  scoopStateEl.textContent = `${currentSecuredOre} / ${maxScoopCapacity}`;
 
   if (upgraded) {
     upgradeButton.textContent = "Push Power Upgraded";
@@ -1053,10 +1343,13 @@ function applyVehicleDrawTransform() {
 }
 
 function drawMineral(mineral) {
+  const drawPos = getMineralDrawPosition(mineral);
   const shakeOffset = mineral.shake > 0 ? Math.sin(performance.now() * 0.08 + mineral.x) * 1.4 : 0;
+  const scale = mineral.drawScale || 1;
 
   ctx.save();
-  ctx.translate(mineral.x + shakeOffset, mineral.y);
+  ctx.translate(drawPos.x + shakeOffset, drawPos.y);
+  ctx.scale(scale, scale);
   ctx.fillStyle = "#c9b26b";
   ctx.strokeStyle = "#7e6a38";
   ctx.lineWidth = 2;
@@ -1069,6 +1362,25 @@ function drawMineral(mineral) {
   ctx.arc(-2.4, -2.4, 2.2, 0, Math.PI * 2);
   ctx.fill();
   ctx.restore();
+}
+
+function getMineralDrawPosition(mineral) {
+  if (mineral.state !== mineralState.securedOre) {
+    return { x: mineral.x, y: mineral.y };
+  }
+
+  const time = performance.now() * 0.006 + mineral.securedSeed;
+  const jitterX = Math.sin(time * 1.7) * securedOreJitterAmount;
+  const jitterY = Math.cos(time * 1.3) * securedOreJitterAmount;
+  const blade = getCurrentBladeConfig();
+  const local = clampSecuredOreLocalPosition(
+    mineral.securedLocalX + mineral.securedOffsetX + jitterX,
+    mineral.securedLocalY + mineral.securedOffsetY + jitterY,
+    mineral.radius,
+    blade
+  );
+
+  return bladeLocalToWorld(local.x, local.y);
 }
 
 function drawParticles() {
@@ -1156,6 +1468,26 @@ function localToWorldVector(x, y) {
   return {
     x: forwardX * x + sideX * y,
     y: forwardY * x + sideY * y,
+  };
+}
+
+function worldVectorToBladeLocal(x, y) {
+  const forwardX = vehicle.dirX;
+  const forwardY = vehicle.dirY;
+  const sideX = -forwardY;
+  const sideY = forwardX;
+
+  return {
+    x: x * forwardX + y * forwardY,
+    y: x * sideX + y * sideY,
+  };
+}
+
+function bladeLocalToWorld(x, y) {
+  const offset = localToWorldVector(x, y);
+  return {
+    x: vehicle.x + offset.x,
+    y: vehicle.y + offset.y,
   };
 }
 

@@ -4,7 +4,7 @@ Last updated: 2026-05-12
 
 ## Current Goal
 
-P0 is a playable mining scoop prototype. The default scoop blade should behave like a passive solid physical scoop:
+P0.3 is a playable mining scoop prototype. The default scoop blade should behave like a passive solid physical scoop:
 
 - not magnetic
 - not one-way
@@ -35,13 +35,25 @@ P0 is a playable mining scoop prototype. The default scoop blade should behave l
   - `scoopMagnetForce = 0`
   - `sideInwardAttractionForce = 0`
   - `bodyMineralPushForce = 0`
+- P0.3 scoop handling model:
+  - minerals use `looseOre`, `captureCandidate`, `securedOre`, and `deliveredOre` states
+  - scoop capacity is logic-only with `maxScoopCapacity = 20`
+  - secured ore stays visible as an irregular loose pile inside the scoop
+  - secured ore keeps captured scoop-local positions with small slosh and jitter
+  - delivery visibly flows secured ore into the collector before awarding coins
 
 ## Latest Change
 
-Added wall blocking for the full vehicle-plus-scoop footprint and improved mineral-mineral separation under squeeze.
+Implemented the P0.3 secured scoop handling model while preserving the push-mining visual fantasy.
 
 Important implementation points in `main.js`:
 
+- `mineralState` defines `looseOre`, `captureCandidate`, `securedOre`, and `deliveredOre`.
+- `updateScoopCaptureCandidates` scores mostly-inside minerals using 9 sample points and a short dwell timer.
+- Candidate capture is capacity-limited and sorted by `insideRatio`, then dwell time.
+- `secureMineral` preserves the captured scoop-local position and adds only small irregular offsets.
+- `updateSecuredOre` renders secured ore as a loose pile riding in the scoop with subtle local slosh.
+- `tryStartSecuredOreDelivery` and `updateDeliveredOre` visibly unload secured ore into the collector.
 - `clampVehicleAndBladeToWalls` constrains both the vehicle body and scoop lips against world walls.
 - `getVehicleAndBladeWorldBounds` builds an axis-aligned wall footprint from the vehicle body and scoop lip endpoints.
 - `resolveMineralContacts` now runs multiple contact iterations and re-applies wall constraints between iterations.
@@ -59,6 +71,15 @@ Important implementation points in `main.js`:
 ## Validation Already Run
 
 - `node --check main.js`
+- P0.3 state assertion script checked:
+  - mostly-inside ore becomes `captureCandidate` before becoming secured
+  - capture requires dwell time and does not happen instantly
+  - limited remaining capacity captures only the highest `insideRatio` candidate
+  - overflow candidates remain loose
+  - secured ore enters `deliveredOre` near the collector and awards coins after visible flow completes
+- Local static server check:
+  - `http://127.0.0.1:8000/index.html` returned 200
+  - `http://127.0.0.1:8000/main.js` served the P0.3 state model code
 - A Node physics assertion script checked:
   - scoop footprint cannot cross left, right, top, or bottom walls
   - overlapping mineral pairs separate to near touching

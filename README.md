@@ -4,7 +4,7 @@ Small canvas prototype for testing a mining vehicle with a passive physical scoo
 
 ## Current Version
 
-P0 prototype.
+P0.3 prototype.
 
 ## How to Run
 
