@@ -1,10 +1,10 @@
 # Miner Mini Game
 
-Small canvas prototype for testing a mining vehicle with a passive physical scoop.
+Small canvas prototype for testing a mining vehicle with a passive physical scoop and quick crusher sell feedback.
 
 ## Current Version
 
-P0.3 prototype.
+P0.4 prototype.
 
 ## How to Run
 

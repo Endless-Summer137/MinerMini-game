@@ -1,10 +1,10 @@
 # Miner Mini Game Progress
 
-Last updated: 2026-05-12
+Last updated: 2026-05-13
 
 ## Current Goal
 
-P0.3 is a playable mining scoop prototype. The default scoop blade should behave like a passive solid physical scoop:
+P0.4 is a playable mining scoop prototype with a quick crusher sell-point feedback pass. The default scoop blade should still behave like a passive solid physical scoop:
 
 - not magnetic
 - not one-way
@@ -15,7 +15,7 @@ P0.3 is a playable mining scoop prototype. The default scoop blade should behave
 
 - Single-page canvas game in `index.html`, `style.css`, and `main.js`.
 - Vehicle movement with pointer and keyboard controls.
-- Mineral spawning, wall collision, mineral-mineral separation, collection zone, coins, and upgrade UI.
+- Mineral spawning, wall collision, mineral-mineral separation, side crusher sell-point, coins, and upgrade UI.
 - Load-based vehicle slowdown and shake.
 - Default scoop blade with a continuous U-shaped boundary.
 - Solid two-sided scoop lip collisions:
@@ -40,20 +40,32 @@ P0.3 is a playable mining scoop prototype. The default scoop blade should behave
   - scoop capacity is logic-only with `maxScoopCapacity = 20`
   - secured ore stays visible as an irregular loose pile inside the scoop
   - secured ore keeps captured scoop-local positions with small slosh and jitter
-  - delivery visibly flows secured ore into the collector before awarding coins
+- P0.4 crusher sell-point model:
+  - the old circular `IN` collector is replaced by a simple embedded dual-shaft crusher
+  - the crusher sits on the upper-left side as a reachable unload bay, not in the main center traffic path
+  - secured ore unloads quickly when the vehicle or scoop reaches the sell area
+  - unload duration scales by carried amount but is capped at 1 second
+  - after unloading, the vehicle can leave while crusher processing continues in the background
+  - crusher processing duration is capped at 3 seconds, with larger loads increasing particle intensity instead of wait time
+  - ore processing emits mineral dust/sparks and drives roller motion
+  - coin payout spawns coin particles that fly toward the top Coins HUD and increment coins on arrival
+  - placeholder hooks exist for crusher loop, ore crush, and coin burst sounds
 
 ## Latest Change
 
-Added code comments for the current P0.3 prototype so future sessions and manual tuning are easier to follow.
+Implemented P0.4 crusher sell-point feedback while preserving the P0 push-mining scope.
 
-Commenting focus:
+Important implementation points in `main.js`:
 
-- top-level tuning constants now explain what each value controls and what increasing/decreasing it tends to change
-- runtime counters such as `coins`, `collected`, and `currentSecuredOre` now explain their gameplay meaning
-- mineral state fields now explain physical, capture, secured, and delivery data
-- important physics/capture/render functions now explain design intent rather than only code mechanics
-- `index.html` and `style.css` now include brief structure comments for HUD/canvas/layout assumptions
-- `WORKFLOW.md` now records the durable rule to document tuning constants with their meaning and tuning effect
+- `crusher` replaces the old `collector` object and is positioned off the main vertical traffic path.
+- `tryStartSecuredOreDelivery` now starts a fast unload batch when secured ore reaches the crusher sell area.
+- `createCrusherBatch`, `getCrusherUnloadDuration`, and `getCrusherProcessingDuration` keep unload and background processing capped.
+- `finishDeliveredOre` removes ore after it reaches the crusher and starts processing once the whole load is unloaded.
+- `updateCrusherBatches` runs crusher processing independently after the player leaves.
+- `spawnCrusherProcessingParticles` scales ore dust/spark intensity with load size.
+- `spawnCoinPayout` creates grouped coin particles that fly toward the Coins HUD and add currency on arrival.
+- `drawCrusher` and `drawCrusherRoller` render a simple embedded ground crusher with rotating dual shafts.
+- `playCrusherLoopSound`, `playOreCrushSound`, and `playCoinBurstSound` are placeholder hooks for future audio.
 
 Previous gameplay implementation:
 
@@ -66,7 +78,6 @@ Important implementation points in `main.js`:
 - Candidate capture is capacity-limited and sorted by `insideRatio`, then dwell time.
 - `secureMineral` preserves the captured scoop-local position and adds only small irregular offsets.
 - `updateSecuredOre` renders secured ore as a loose pile riding in the scoop with subtle local slosh.
-- `tryStartSecuredOreDelivery` and `updateDeliveredOre` visibly unload secured ore into the collector.
 - `clampVehicleAndBladeToWalls` constrains both the vehicle body and scoop lips against world walls.
 - `getVehicleAndBladeWorldBounds` builds an axis-aligned wall footprint from the vehicle body and scoop lip endpoints.
 - `resolveMineralContacts` now runs multiple contact iterations and re-applies wall constraints between iterations.
@@ -83,6 +94,11 @@ Important implementation points in `main.js`:
 
 ## Validation Already Run
 
+- `node --check main.js` for P0.4 crusher sell-point changes.
+- Local static server check for P0.4:
+  - `http://127.0.0.1:8000/index.html` returned 200
+  - served `main.js` includes `drawCrusher`, `spawnCoinPayout`, and `playCrusherLoopSound`
+  - served `main.js` no longer includes the old `const collector` object
 - `node --check main.js`
 - P0.3 state assertion script checked:
   - mostly-inside ore becomes `captureCandidate` before becoming secured
@@ -112,13 +128,16 @@ Important implementation points in `main.js`:
 - There is no automated test file yet; the physics assertions were run as an ad hoc VM script.
 - The project folder started as a standalone local prototype and is still early in its tooling maturity.
 - There is not yet a repeatable automated regression test harness for scoop/mineral behavior.
+- P0.4 crusher feedback has syntax validation but still needs hands-on browser playtesting for exact feel.
+- Sound hooks are placeholders only; no audio files or playback implementation exists yet.
 
 ## Recommended Next Steps
 
 1. Add repeatable physics regression tests for scoop lip containment.
-2. Tune scoop lip friction and restitution after more playtesting.
-3. Add a debug collision overlay toggle.
-4. Improve mineral pile stability under high load.
+2. Playtest crusher placement and unload timing to confirm it feels deliberate, quick, and non-blocking.
+3. Tune scoop lip friction and restitution after more playtesting.
+4. Add a debug collision overlay toggle.
+5. Improve mineral pile stability under high load.
 
 ## Workflow Agreement
 

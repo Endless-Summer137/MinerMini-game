@@ -46,7 +46,7 @@ const mineralFriction = 0.88; // Ground damping per frame. Lower makes rocks sto
 const requiredPush = 1; // Minimum push power before a mineral responds strongly.
 const saturationPush = 5; // Push level where response is mostly maxed out.
 const maxPushSpeed = 118; // Mineral speed cap while player is pushing.
-const maxMineralSpeed = 126; // Absolute mineral speed cap, including collisions and collector pull.
+const maxMineralSpeed = 126; // Absolute mineral speed cap, including collisions and crusher delivery.
 
 // Multiple contact passes keep squeezed minerals from visibly overlapping after
 // the scoop or world walls compress a small pile.
@@ -69,9 +69,17 @@ const overloadSpeedPenalty = 0.38; // Max slowdown from overload. Higher makes h
 const overloadShakeAmount = 0.45; // Visual shake when overloaded. Higher is more obvious.
 const maxVehicleKnockback = 0; // Vehicle knockback cap from minerals. Keep 0 unless testing recoil.
 
-const collectorRadius = 56; // Collector range for loose ore pull and direct loose collection.
-const collectorPullForce = 360; // Pull strength for loose ore near collector. Higher vacuums loose ore faster.
-const securedUnloadDistance = 74; // Distance where secured scoop ore starts visible unloading.
+const crusherSellRadius = 46; // Vehicle/scoop range that starts secured-ore unloading at the side crusher.
+const crusherProcessingPitWidth = 78; // Visual width of the embedded crusher pit.
+const crusherProcessingPitHeight = 50; // Visual height of the embedded crusher pit.
+const crusherUnloadDurationMin = 0.2; // Fastest secured load dump into the crusher.
+const crusherUnloadDurationMax = 1.0; // Hard cap so unloading never becomes a forced pause.
+const crusherProcessingDurationMin = 1.0; // Small loads still get a visible crush cycle.
+const crusherProcessingDurationMax = 3.0; // Background processing cap for very large future loads.
+const crusherMaxCoinParticles = 28; // Visual coin burst cap; large payouts group value per particle.
+const crusherCoinFlightDuration = 0.68; // Coin travel time toward the top Coins HUD.
+const crusherRollerBaseSpin = 2.2; // Idle roller motion; higher makes the sell point feel more mechanical.
+const crusherRollerActiveSpin = 11; // Active processing roller motion; higher feels more energetic.
 const upgradeCost = 20; // Coins required for the temporary push-power upgrade.
 const upgradedPushForceMultiplier = 2.2; // Upgrade multiplier for pushForce. Higher makes upgraded shove stronger.
 const upgradedBladeWidthBonus = 10; // Extra scoop width after upgrade. Higher catches a wider pile.
@@ -91,9 +99,6 @@ const securedOreRandomOffset = 2.4; // Capture-time random offset so secured roc
 const securedOreLocalDamping = 0.82; // Damps secured slosh velocity. Lower settles faster; higher feels looser.
 const securedOreMaxVisualOffset = 5.5; // Max secured visual slosh from captured position.
 const securedOreJitterAmount = 0.65; // Render-only micro jitter to keep the pile organic.
-const deliveredOreDurationMin = 0.28; // Fastest visible unload flight time to collector.
-const deliveredOreDurationMax = 0.48; // Slowest visible unload flight time to collector.
-
 const canvas = document.getElementById("gameCanvas");
 const ctx = canvas.getContext("2d");
 const coinsEl = document.getElementById("coins");
@@ -112,12 +117,14 @@ const world = {
   wall: 18,
 };
 
-// Collector is the unload target. x/y set its center; coreRadius affects only
-// the drawn inner circle, while collectorRadius above controls gameplay range.
-const collector = {
-  x: world.width / 2,
-  y: 72,
-  coreRadius: 15,
+// The crusher sits off the main vertical traffic path so selling is deliberate
+// but still reachable as a quick side unload bay.
+const crusher = {
+  x: world.wall + 66,
+  y: 108,
+  sellRadius: crusherSellRadius,
+  pitWidth: crusherProcessingPitWidth,
+  pitHeight: crusherProcessingPitHeight,
 };
 
 // Vehicle position, facing, and motion. bodyRadius is the physical body contact
@@ -177,7 +184,7 @@ const pointerControl = {
 const keys = new Set();
 const completionTarget = Math.ceil(mineralCount * 0.8); // Win/checkpoint target. Raising mineralCount raises this too.
 let minerals = []; // All visible ore objects, including loose, secured, and delivery animation states.
-let particles = []; // Short-lived coin/spark feedback dots; visual only.
+let particles = []; // Short-lived dust, spark, and flying coin feedback; visual only.
 let coins = 0; // Spendable currency shown in the HUD and used by the upgrade button.
 let collected = 0; // Total delivered ore count for progress display/completion.
 let upgraded = false; // One-shot P0 upgrade flag for push power and blade width.
@@ -185,6 +192,10 @@ let complete = false; // Completion banner flag once collected reaches completio
 let lastTime = 0; // Previous animation timestamp for delta-time physics.
 let pushingCount = 0; // Number of loose/candidate minerals currently contacting the scoop lips.
 let currentSecuredOre = 0; // Current secured scoop load, displayed as Scoop: current/maxScoopCapacity.
+let crusherBatches = []; // Background crusher jobs created after fast unload.
+let nextCrusherBatchId = 1; // Stable id so delivered ore can notify its processing batch.
+let crusherRollerSpin = 0; // Visual rotation phase for the dual crusher shafts.
+let crusherLoopSoundActive = false; // Placeholder sound state to avoid repeated loop-start hooks.
 
 function resetGame() {
   vehicle.x = world.width / 2;
@@ -196,6 +207,10 @@ function resetGame() {
   vehicle.vy = 0;
   minerals = createMinerals();
   particles = [];
+  crusherBatches = [];
+  nextCrusherBatchId = 1;
+  crusherRollerSpin = 0;
+  crusherLoopSoundActive = false;
   coins = 0;
   collected = 0;
   upgraded = false;
@@ -203,7 +218,7 @@ function resetGame() {
   pushingCount = 0;
   currentSecuredOre = 0;
   lastTime = performance.now();
-  messageEl.textContent = "Drag on the canvas to scoop minerals into the collector.";
+  messageEl.textContent = "Scoop ore, then unload at the side crusher.";
   canvas.focus();
   updateHud();
 }
@@ -218,7 +233,7 @@ function createMinerals() {
     // secured/delivery fields stay dormant while the mineral is loose.
     const mineral = {
       x: random(world.wall + 28, world.width - world.wall - 28),
-      y: random(collector.y + collectorRadius + 42, world.height - world.wall - 44),
+      y: random(crusher.y + crusher.sellRadius + 42, world.height - world.wall - 44),
       vx: 0,
       vy: 0,
       radius: 7,
@@ -240,7 +255,10 @@ function createMinerals() {
       deliveryDuration: 0, // Total unload animation duration for this rock.
       deliveryStartX: 0, // World-space unload start x.
       deliveryStartY: 0, // World-space unload start y.
-      drawScale: 1, // Shrinks delivered ore as it flows into collector.
+      deliveryTargetX: 0, // World-space crusher pit target x.
+      deliveryTargetY: 0, // World-space crusher pit target y.
+      crusherBatchId: 0, // Processing batch notified when this ore reaches the pit.
+      drawScale: 1, // Shrinks delivered ore as it flows into crusher.
       type: mineralType,
     };
 
@@ -261,6 +279,7 @@ function update(time) {
 
   updateVehicle(dt);
   updateMinerals(dt);
+  updateCrusherBatches(dt);
   updateParticles(dt);
   draw();
 
@@ -816,14 +835,14 @@ function updateDeliveredOre(mineral, index, dt) {
   const eased = 1 - Math.pow(1 - t, 2.2);
   const arc = Math.sin(t * Math.PI) * 10;
 
-  // Delivery stays visible: secured rocks flow into the collector before they
-  // become coins, avoiding a hidden inventory conversion.
-  mineral.x = mineral.deliveryStartX + (collector.x - mineral.deliveryStartX) * eased;
-  mineral.y = mineral.deliveryStartY + (collector.y - mineral.deliveryStartY) * eased - arc;
+  // Delivery stays visible and fast: secured rocks dump into the crusher, then
+  // the background batch owns processing and payout feedback.
+  mineral.x = mineral.deliveryStartX + (mineral.deliveryTargetX - mineral.deliveryStartX) * eased;
+  mineral.y = mineral.deliveryStartY + (mineral.deliveryTargetY - mineral.deliveryStartY) * eased - arc;
   mineral.drawScale = 1 - t * 0.62;
 
   if (t >= 1) {
-    collectDeliveredMineral(index, mineral.x, mineral.y);
+    finishDeliveredOre(index, mineral);
   }
 }
 
@@ -972,29 +991,101 @@ function tryStartSecuredOreDelivery() {
   if (currentSecuredOre <= 0) return;
 
   // Unload when either the vehicle body or the carried scoop pile reaches the
-  // collector, which feels better than requiring a precise center overlap.
+  // side crusher, without requiring the player to park and wait.
   const scoopNose = bladeLocalToWorld(getBladeStart() + getCurrentBladeConfig().length * 0.55, 0);
-  const vehicleDistance = distance(vehicle.x, vehicle.y, collector.x, collector.y);
-  const scoopDistance = distance(scoopNose.x, scoopNose.y, collector.x, collector.y);
-  if (Math.min(vehicleDistance, scoopDistance) > securedUnloadDistance) return;
+  const vehicleDistance = distance(vehicle.x, vehicle.y, crusher.x, crusher.y);
+  const scoopDistance = distance(scoopNose.x, scoopNose.y, crusher.x, crusher.y);
+  if (Math.min(vehicleDistance, scoopDistance) > crusher.sellRadius) return;
 
-  for (const mineral of minerals) {
-    if (mineral.state !== mineralState.securedOre) continue;
-    startSecuredOreDelivery(mineral);
-  }
+  const securedOre = minerals.filter((mineral) => mineral.state === mineralState.securedOre);
+  if (securedOre.length === 0) return;
 
+  const batch = createCrusherBatch(securedOre.length);
+  securedOre.forEach((mineral, index) => startSecuredOreDelivery(mineral, batch, index, securedOre.length));
   syncScoopLoadCount();
-  messageEl.textContent = "Ore unloaded.";
+  messageEl.textContent = `Unloading ${batch.amount} ore.`;
   updateHud();
 }
 
-function startSecuredOreDelivery(mineral) {
+function createCrusherBatch(amount) {
+  return {
+    id: nextCrusherBatchId,
+    amount,
+    unloadingRemaining: amount,
+    unloadDuration: getCrusherUnloadDuration(amount),
+    processingAge: 0,
+    processingDuration: getCrusherProcessingDuration(amount),
+    phase: "unloading",
+  };
+}
+
+function getCrusherUnloadDuration(amount) {
+  if (amount <= 0) return crusherUnloadDurationMin;
+  if (amount <= 5) return clamp(0.2 + (amount / 5) * 0.15, 0.2, 0.35);
+  if (amount <= 14) return clamp(0.35 + ((amount - 5) / 9) * 0.25, 0.35, 0.6);
+  return clamp(0.6 + ((amount - 14) / Math.max(maxScoopCapacity - 14, 1)) * 0.2, 0.6, crusherUnloadDurationMax);
+}
+
+function getCrusherProcessingDuration(amount) {
+  if (amount <= 10) return crusherProcessingDurationMin;
+  if (amount <= 100) {
+    return clamp(2 + ((amount - 10) / 90), 2, crusherProcessingDurationMax);
+  }
+  return crusherProcessingDurationMax;
+}
+
+function startCrusherProcessing(batch) {
+  batch.phase = "processing";
+  batch.processingAge = 0;
+  playOreCrushSound(batch.amount);
+  if (!complete) {
+    messageEl.textContent = "Crusher processing ore.";
+  }
+}
+
+function getCrusherBatch(batchId) {
+  return crusherBatches.find((batch) => batch.id === batchId);
+}
+
+function finishDeliveredOre(index, mineral) {
+  const batch = getCrusherBatch(mineral.crusherBatchId);
+  minerals.splice(index, 1);
+  collected += 1;
+  spawnCrusherImpactParticles(mineral.x, mineral.y, 1);
+
+  if (!complete && collected >= completionTarget) {
+    complete = true;
+    messageEl.textContent = "Area Cleared.";
+  }
+
+  if (batch) {
+    batch.unloadingRemaining -= 1;
+    if (batch.unloadingRemaining <= 0) {
+      startCrusherProcessing(batch);
+    }
+  }
+
+  updateHud();
+}
+
+function startSecuredOreDelivery(mineral, batch, index, total) {
+  if (!crusherBatches.includes(batch)) {
+    crusherBatches.push(batch);
+    nextCrusherBatchId += 1;
+  }
+
   const drawPos = getMineralDrawPosition(mineral);
+  const spread = total > 1 ? (index / (total - 1) - 0.5) : 0;
+  const targetX = crusher.x + random(-crusher.pitWidth * 0.26, crusher.pitWidth * 0.26);
+  const targetY = crusher.y + spread * crusher.pitHeight * 0.5 + random(-5, 5);
   mineral.state = mineralState.deliveredOre;
   mineral.deliveryAge = 0;
-  mineral.deliveryDuration = random(deliveredOreDurationMin, deliveredOreDurationMax);
+  mineral.deliveryDuration = batch.unloadDuration * random(0.74, 1);
   mineral.deliveryStartX = drawPos.x;
   mineral.deliveryStartY = drawPos.y;
+  mineral.deliveryTargetX = targetX;
+  mineral.deliveryTargetY = targetY;
+  mineral.crusherBatchId = batch.id;
   mineral.x = drawPos.x;
   mineral.y = drawPos.y;
   mineral.vx = 0;
@@ -1002,18 +1093,38 @@ function startSecuredOreDelivery(mineral) {
   mineral.drawScale = 1;
 }
 
-function collectDeliveredMineral(index, x, y) {
-  minerals.splice(index, 1);
-  coins += 1;
-  collected += 1;
-  spawnCollectFeedback(x, y);
+function updateCrusherBatches(dt) {
+  const activeProcessing = crusherBatches.some((batch) => batch.phase === "processing");
+  const spinSpeed = activeProcessing ? crusherRollerActiveSpin : crusherRollerBaseSpin;
+  crusherRollerSpin += spinSpeed * dt;
+  updateCrusherLoopSound(activeProcessing);
 
-  if (!complete && collected >= completionTarget) {
-    complete = true;
-    messageEl.textContent = "Area Cleared.";
+  for (const mineral of minerals) {
+    if (mineral.state === mineralState.deliveredOre) {
+      spawnCrusherAmbientTrail(mineral, dt);
+    }
   }
 
-  updateHud();
+  for (let i = crusherBatches.length - 1; i >= 0; i -= 1) {
+    const batch = crusherBatches[i];
+    if (batch.phase !== "processing") continue;
+
+    batch.processingAge += dt;
+    spawnCrusherProcessingParticles(batch, dt);
+
+    if (batch.processingAge >= batch.processingDuration) {
+      completeCrusherBatch(batch);
+      crusherBatches.splice(i, 1);
+    }
+  }
+}
+
+function completeCrusherBatch(batch) {
+  spawnCoinPayout(batch.amount);
+  playCoinBurstSound(batch.amount);
+  if (!complete) {
+    messageEl.textContent = "Ore sold.";
+  }
 }
 
 function updateMinerals(dt) {
@@ -1038,18 +1149,6 @@ function updateMinerals(dt) {
 
     applyStuckCorrection(mineral, dt);
 
-    const toCollectorX = collector.x - mineral.x;
-    const toCollectorY = collector.y - mineral.y;
-    const collectorDistance = Math.hypot(toCollectorX, toCollectorY);
-
-    if (collectorDistance < collectorRadius) {
-      const pull = 1 - collectorDistance / collectorRadius;
-      const nx = toCollectorX / Math.max(collectorDistance, 0.001);
-      const ny = toCollectorY / Math.max(collectorDistance, 0.001);
-      mineral.vx += nx * collectorPullForce * pull * dt;
-      mineral.vy += ny * collectorPullForce * pull * dt;
-    }
-
     mineral.x += mineral.vx * dt;
     mineral.y += mineral.vy * dt;
 
@@ -1063,10 +1162,6 @@ function updateMinerals(dt) {
 
     resolveWallContact(mineral);
 
-    const collectDistance = distance(mineral.x, mineral.y, collector.x, collector.y);
-    if (collectDistance < collector.coreRadius) {
-      collectMineral(i, mineral.x, mineral.y);
-    }
   }
 
   resolveMineralContacts();
@@ -1194,43 +1289,151 @@ function resolveMineralContacts() {
   }
 }
 
-function collectMineral(index, x, y) {
-  minerals.splice(index, 1);
-  coins += 1;
-  collected += 1;
-  spawnCollectFeedback(x, y);
-
-  if (!complete && collected >= completionTarget) {
-    complete = true;
-    messageEl.textContent = "Area Cleared.";
-  } else if (!complete) {
-    messageEl.textContent = "Mineral collected.";
-  }
-
-  updateHud();
-}
-
-function spawnCollectFeedback(x, y) {
-  particles.push({ x, y, age: 0, life: 0.42, radius: 8, text: "+1" });
-  for (let i = 0; i < 7; i += 1) {
-    const angle = (Math.PI * 2 * i) / 7;
+function spawnCrusherImpactParticles(x, y, amount) {
+  const count = clamp(Math.ceil(amount * 4), 4, 14);
+  for (let i = 0; i < count; i += 1) {
     particles.push({
+      kind: "oreDust",
       x,
       y,
-      vx: Math.cos(angle) * random(20, 48),
-      vy: Math.sin(angle) * random(20, 48),
+      vx: random(-34, 34),
+      vy: random(-38, 20),
       age: 0,
-      life: random(0.24, 0.38),
-      radius: random(2, 4),
-      text: "",
+      life: random(0.22, 0.42),
+      radius: random(1.8, 4),
+      color: random(0, 1) > 0.78 ? "#f0d06a" : "#b8954f",
     });
   }
+}
+
+function spawnCrusherAmbientTrail(mineral, dt) {
+  if (random(0, 1) > dt * 12) return;
+  particles.push({
+    kind: "oreDust",
+    x: mineral.x + random(-4, 4),
+    y: mineral.y + random(-4, 4),
+    vx: random(-18, 18),
+    vy: random(-22, 8),
+    age: 0,
+    life: random(0.18, 0.32),
+    radius: random(1.4, 2.8),
+    color: "#c9b26b",
+  });
+}
+
+function spawnCrusherProcessingParticles(batch, dt) {
+  const intensity = clamp(1 + batch.amount / 8, 1, 8);
+  const expected = intensity * 18 * dt;
+  const count = Math.floor(expected) + (random(0, 1) < expected % 1 ? 1 : 0);
+
+  for (let i = 0; i < count; i += 1) {
+    const side = random(0, 1) > 0.5 ? 1 : -1;
+    particles.push({
+      kind: random(0, 1) > 0.82 ? "spark" : "oreDust",
+      x: crusher.x + random(-crusher.pitWidth * 0.38, crusher.pitWidth * 0.38),
+      y: crusher.y + random(-crusher.pitHeight * 0.34, crusher.pitHeight * 0.34),
+      vx: side * random(12, 58),
+      vy: random(-42, 20),
+      age: 0,
+      life: random(0.2, 0.48),
+      radius: random(1.2, 3.2),
+      color: random(0, 1) > 0.82 ? "#f4d66b" : "#8d7750",
+    });
+  }
+}
+
+function spawnCoinPayout(amount) {
+  if (amount <= 0) return;
+  const target = getCoinHudCanvasTarget();
+  const coinCount = Math.min(amount, crusherMaxCoinParticles);
+  let remainingValue = amount;
+
+  particles.push({
+    kind: "coinBurst",
+    x: crusher.x,
+    y: crusher.y,
+    age: 0,
+    life: 0.34,
+    radius: 26 + Math.min(amount, 30) * 0.45,
+  });
+
+  for (let i = 0; i < coinCount; i += 1) {
+    const remainingCoins = coinCount - i;
+    const value = Math.ceil(remainingValue / remainingCoins);
+    const startX = crusher.x + random(-crusher.pitWidth * 0.28, crusher.pitWidth * 0.28);
+    const startY = crusher.y + random(-crusher.pitHeight * 0.24, crusher.pitHeight * 0.24);
+    remainingValue -= value;
+    particles.push({
+      kind: "coin",
+      x: startX,
+      y: startY,
+      startX,
+      startY,
+      targetX: target.x + random(-6, 6),
+      targetY: target.y + random(-3, 3),
+      value,
+      paid: false,
+      age: -i * 0.018,
+      life: crusherCoinFlightDuration,
+      radius: random(4.2, 5.6),
+    });
+  }
+}
+
+function getCoinHudCanvasTarget() {
+  const canvasRect = canvas.getBoundingClientRect();
+  const coinRect = coinsEl.getBoundingClientRect();
+  if (!canvasRect.width || !canvasRect.height || !coinRect.width) {
+    return { x: 38, y: 6 };
+  }
+
+  return {
+    x: clamp(((coinRect.left + coinRect.width / 2 - canvasRect.left) / canvasRect.width) * canvas.width, 12, world.width - 12),
+    y: ((coinRect.top + coinRect.height / 2 - canvasRect.top) / canvasRect.height) * canvas.height,
+  };
+}
+
+function updateCrusherLoopSound(active) {
+  if (crusherLoopSoundActive === active) return;
+  crusherLoopSoundActive = active;
+  playCrusherLoopSound(active);
+}
+
+function playCrusherLoopSound(active) {
+  // Future sound hook: start/stop a crusher loop while processing batches exist.
+}
+
+function playOreCrushSound(amount) {
+  // Future sound hook: one-shot ore crunch, scaled by amount.
+}
+
+function playCoinBurstSound(amount) {
+  // Future sound hook: payout burst, scaled by amount.
 }
 
 function updateParticles(dt) {
   for (let i = particles.length - 1; i >= 0; i -= 1) {
     const particle = particles[i];
     particle.age += dt;
+    if (particle.age < 0) continue;
+
+    if (particle.kind === "coin") {
+      const t = clamp(particle.age / particle.life, 0, 1);
+      const eased = 1 - Math.pow(1 - t, 2.6);
+      const arc = Math.sin(t * Math.PI) * 22;
+      particle.x = particle.startX + (particle.targetX - particle.startX) * eased;
+      particle.y = particle.startY + (particle.targetY - particle.startY) * eased - arc;
+
+      if (!particle.paid && t >= 1) {
+        particle.paid = true;
+        coins += particle.value;
+        updateHud();
+      }
+
+      if (t >= 1) particles.splice(i, 1);
+      continue;
+    }
+
     particle.x += (particle.vx || 0) * dt;
     particle.y += (particle.vy || -18) * dt;
     if (particle.age >= particle.life) {
@@ -1266,7 +1469,7 @@ function buyUpgrade() {
 function draw() {
   ctx.clearRect(0, 0, world.width, world.height);
   drawGround();
-  drawCollector();
+  drawCrusher();
   drawBladeSurface();
   for (const mineral of minerals) drawMineral(mineral);
   drawBladeRimAndVehicle();
@@ -1301,32 +1504,74 @@ function drawGround() {
   }
 }
 
-function drawCollector() {
+function drawCrusher() {
+  const active = crusherBatches.some((batch) => batch.phase === "processing" || batch.phase === "unloading");
+  const pulse = active ? 0.5 + Math.sin(performance.now() * 0.018) * 0.5 : 0;
+
   ctx.save();
-  ctx.translate(collector.x, collector.y);
+  ctx.translate(crusher.x, crusher.y);
 
-  ctx.fillStyle = "rgba(94, 166, 146, 0.16)";
+  ctx.fillStyle = "#263035";
+  ctx.strokeStyle = "#4d5a5c";
+  ctx.lineWidth = 2;
   ctx.beginPath();
-  ctx.arc(0, 0, collectorRadius, 0, Math.PI * 2);
+  ctx.roundRect(-crusher.sellRadius - 8, -crusher.sellRadius + 2, crusher.sellRadius * 2 + 16, crusher.sellRadius * 2 - 4, 9);
   ctx.fill();
-
-  ctx.strokeStyle = "#6fd0b4";
-  ctx.lineWidth = 3;
-  ctx.beginPath();
-  ctx.arc(0, 0, collectorRadius, 0, Math.PI * 2);
   ctx.stroke();
 
-  ctx.fillStyle = "#6fd0b4";
+  ctx.fillStyle = "#1a2022";
+  ctx.strokeStyle = active ? `rgba(244, 214, 107, ${0.42 + pulse * 0.24})` : "#5b6764";
+  ctx.lineWidth = 3;
   ctx.beginPath();
-  ctx.arc(0, 0, collector.coreRadius, 0, Math.PI * 2);
+  ctx.roundRect(-crusher.pitWidth / 2, -crusher.pitHeight / 2, crusher.pitWidth, crusher.pitHeight, 8);
   ctx.fill();
+  ctx.stroke();
 
-  ctx.fillStyle = "#10201e";
-  ctx.font = "700 11px Arial";
-  ctx.textAlign = "center";
-  ctx.textBaseline = "middle";
-  ctx.fillText("IN", 0, 0);
+  ctx.fillStyle = "rgba(0, 0, 0, 0.24)";
+  ctx.fillRect(-crusher.pitWidth / 2 + 7, -crusher.pitHeight / 2 + 7, crusher.pitWidth - 14, crusher.pitHeight - 14);
+
+  drawCrusherRoller(-13, 1, active);
+  drawCrusherRoller(13, -1, active);
+
+  ctx.strokeStyle = "rgba(244, 240, 223, 0.16)";
+  ctx.lineWidth = 1;
+  ctx.setLineDash([4, 5]);
+  ctx.strokeRect(-crusher.sellRadius, -crusher.sellRadius + 10, crusher.sellRadius * 2, crusher.sellRadius * 2 - 20);
+  ctx.setLineDash([]);
+
   ctx.restore();
+}
+
+function drawCrusherRoller(offsetX, direction, active) {
+  const rollerWidth = 16;
+  const rollerHeight = crusher.pitHeight - 12;
+  const spin = ((crusherRollerSpin * direction) % 1 + 1) % 1;
+
+  ctx.fillStyle = active ? "#7d8280" : "#5b6262";
+  ctx.strokeStyle = "#202627";
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.roundRect(offsetX - rollerWidth / 2, -rollerHeight / 2, rollerWidth, rollerHeight, 7);
+  ctx.fill();
+  ctx.stroke();
+
+  ctx.strokeStyle = active ? "#f4d66b" : "#2e3738";
+  ctx.lineWidth = 2;
+  for (let i = 0; i < 6; i += 1) {
+    const y = -rollerHeight / 2 + (((i / 6 + spin) % 1) * rollerHeight);
+    ctx.beginPath();
+    ctx.moveTo(offsetX - rollerWidth / 2 + 3, y);
+    ctx.lineTo(offsetX + rollerWidth / 2 - 3, y + direction * 3);
+    ctx.stroke();
+  }
+
+  ctx.fillStyle = "#22292a";
+  ctx.beginPath();
+  ctx.arc(offsetX, -rollerHeight / 2 + 4, 3, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.arc(offsetX, rollerHeight / 2 - 4, 3, 0, Math.PI * 2);
+  ctx.fill();
 }
 
 function drawBladeSurface() {
@@ -1453,18 +1698,41 @@ function getMineralDrawPosition(mineral) {
 
 function drawParticles() {
   for (const particle of particles) {
+    if (particle.age < 0) continue;
     const t = particle.age / particle.life;
     ctx.globalAlpha = 1 - t;
-    if (particle.text) {
+    if (particle.kind === "coin") {
       ctx.fillStyle = "#f4d66b";
-      ctx.font = "700 14px Arial";
-      ctx.textAlign = "center";
-      ctx.fillText(particle.text, particle.x, particle.y - 10 - t * 12);
+      ctx.strokeStyle = "#8f6b20";
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.arc(particle.x, particle.y, particle.radius, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = "rgba(255, 255, 255, 0.55)";
+      ctx.beginPath();
+      ctx.arc(particle.x - particle.radius * 0.3, particle.y - particle.radius * 0.35, particle.radius * 0.25, 0, Math.PI * 2);
+      ctx.fill();
+    } else if (particle.kind === "coinBurst") {
+      ctx.strokeStyle = "#f4d66b";
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.arc(particle.x, particle.y, particle.radius * (0.5 + t), 0, Math.PI * 2);
+      ctx.stroke();
     } else {
-      ctx.fillStyle = "#f4d66b";
+      ctx.fillStyle = particle.color || "#f4d66b";
       ctx.beginPath();
       ctx.arc(particle.x, particle.y, particle.radius * (1 - t * 0.4), 0, Math.PI * 2);
       ctx.fill();
+
+      if (particle.kind === "spark") {
+        ctx.strokeStyle = "rgba(244, 214, 107, 0.65)";
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(particle.x, particle.y);
+        ctx.lineTo(particle.x - (particle.vx || 0) * 0.06, particle.y - (particle.vy || 0) * 0.06);
+        ctx.stroke();
+      }
     }
     ctx.globalAlpha = 1;
   }
