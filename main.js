@@ -14,6 +14,8 @@ const vehicleSpeed = 175; // Player travel speed in pixels/second. Higher feels 
 const joystickMaxRadius = 86; // On-screen drag radius before input is treated as full strength.
 const inputDeadZone = 8; // Tiny drag/key noise below this distance is ignored.
 const facingSmoothingTime = 0.05; // Lower turns the scoop faster; higher makes steering feel heavier.
+const reverseDotThreshold = -0.78; // Input more opposite than this reverses instead of turning the scoop around.
+const reverseSpeedMultiplier = 0.72; // Reverse movement speed. Higher backs up faster while preserving scoop direction.
 
 const bladeWidth = 52; // Inner scoop span between side lips. Higher catches wider piles.
 const bladeLength = 38; // Back-to-front scoop depth. Higher gives more room before ore reaches the mouth.
@@ -72,8 +74,14 @@ const maxVehicleKnockback = 0; // Vehicle knockback cap from minerals. Keep 0 un
 const crusherSellRadius = 46; // Vehicle/scoop range that starts secured-ore unloading at the side crusher.
 const crusherProcessingPitWidth = 78; // Visual width of the embedded crusher pit.
 const crusherProcessingPitHeight = 50; // Visual height of the embedded crusher pit.
-const crusherUnloadDurationMin = 0.2; // Fastest secured load dump into the crusher.
-const crusherUnloadDurationMax = 1.0; // Hard cap so unloading never becomes a forced pause.
+const crusherSmallLoadRatioMax = 0.5; // Up to this loadRatio counts as a small unload.
+const crusherMediumLoadRatioMax = 0.7; // Up to this loadRatio counts as a medium unload.
+const crusherLargeLoadRatioMax = 0.95; // Up to this loadRatio counts as a large unload.
+const crusherSmallUnloadDurationMin = 0.2; // Empty-to-small load lower bound; keeps tiny unloads snappy.
+const crusherSmallUnloadDurationMax = 0.35; // Small load upper bound for 0% to 50% full.
+const crusherMediumUnloadDurationMax = 0.6; // Medium load upper bound for 50% to 70% full.
+const crusherLargeUnloadDurationMax = 0.8; // Large load upper bound for 70% to 95% full.
+const crusherFullUnloadDuration = 1.0; // Near-full and full load duration, also the hard unload cap.
 const crusherProcessingDurationMin = 1.0; // Small loads still get a visible crush cycle.
 const crusherProcessingDurationMax = 3.0; // Background processing cap for very large future loads.
 const crusherMaxCoinParticles = 28; // Visual coin burst cap; large payouts group value per particle.
@@ -136,6 +144,7 @@ const vehicle = {
   bodyRadius: 12,
   dirX: 0,
   dirY: -1,
+  isReversing: false,
   overloadShake: 0,
   vx: 0,
   vy: 0,
@@ -202,6 +211,7 @@ function resetGame() {
   vehicle.y = world.height - 78;
   vehicle.dirX = 0;
   vehicle.dirY = -1;
+  vehicle.isReversing = false;
   vehicle.overloadShake = 0;
   vehicle.vx = 0;
   vehicle.vy = 0;
@@ -288,10 +298,12 @@ function update(time) {
 
 function updateVehicle(dt) {
   const input = getControlInput();
+  const movement = getVehicleMovementIntent(input);
 
-  if (input.active) {
+  if (input.active && !movement.isReversing) {
     smoothFacing(input.x, input.y, dt);
   }
+  vehicle.isReversing = movement.isReversing;
 
   const blade = getCurrentBladeConfig();
   const currentLoad = input.active ? countScoopLoad(blade) : 0;
@@ -300,8 +312,9 @@ function updateVehicle(dt) {
 
   const previousX = vehicle.x;
   const previousY = vehicle.y;
-  vehicle.x += vehicle.dirX * vehicleSpeed * input.strength * overload.speedMultiplier * dt;
-  vehicle.y += vehicle.dirY * vehicleSpeed * input.strength * overload.speedMultiplier * dt;
+  const speedMultiplier = movement.speedMultiplier * overload.speedMultiplier;
+  vehicle.x += movement.x * vehicleSpeed * input.strength * speedMultiplier * dt;
+  vehicle.y += movement.y * vehicleSpeed * input.strength * speedMultiplier * dt;
   clampVehicleAndBladeToWalls(blade);
   vehicle.vx = (vehicle.x - previousX) / Math.max(dt, 0.001);
   vehicle.vy = (vehicle.y - previousY) / Math.max(dt, 0.001);
@@ -309,6 +322,25 @@ function updateVehicle(dt) {
   separateVehicleBodyFromMinerals(dt);
   const bladeContactCount = applyBladeLipCollisions(dt, blade, input.active);
   pushingCount = input.active ? bladeContactCount : 0;
+}
+
+function getVehicleMovementIntent(input) {
+  if (!input.active) {
+    return { x: vehicle.dirX, y: vehicle.dirY, isReversing: false, speedMultiplier: 0 };
+  }
+
+  const dot = input.x * vehicle.dirX + input.y * vehicle.dirY;
+  const isReversing = dot < reverseDotThreshold;
+
+  // Movement follows the player's input, while facing/blade direction only
+  // updates outside strong reverse input. This lets the player back out without
+  // forcing an automatic U-turn.
+  return {
+    x: input.x,
+    y: input.y,
+    isReversing,
+    speedMultiplier: isReversing ? reverseSpeedMultiplier : 1,
+  };
 }
 
 function getControlInput() {
@@ -988,7 +1020,8 @@ function clampSecuredOreLocalPosition(localX, localY, radius, blade) {
 }
 
 function tryStartSecuredOreDelivery() {
-  if (currentSecuredOre <= 0) return;
+  const load = getCurrentCrusherLoad();
+  if (load.currentLoad <= 0) return;
 
   // Unload when either the vehicle body or the carried scoop pile reaches the
   // side crusher, without requiring the player to park and wait.
@@ -1000,30 +1033,52 @@ function tryStartSecuredOreDelivery() {
   const securedOre = minerals.filter((mineral) => mineral.state === mineralState.securedOre);
   if (securedOre.length === 0) return;
 
-  const batch = createCrusherBatch(securedOre.length);
+  const batch = createCrusherBatch(securedOre.length, load.loadRatio);
   securedOre.forEach((mineral, index) => startSecuredOreDelivery(mineral, batch, index, securedOre.length));
   syncScoopLoadCount();
   messageEl.textContent = `Unloading ${batch.amount} ore.`;
   updateHud();
 }
 
-function createCrusherBatch(amount) {
+function getCurrentCrusherLoad() {
+  const currentLoad = currentSecuredOre;
+  const maxLoad = maxScoopCapacity;
+  const loadRatio = maxLoad > 0 ? clamp(currentLoad / maxLoad, 0, 1) : 0;
+  return { currentLoad, maxLoad, loadRatio };
+}
+
+function createCrusherBatch(amount, loadRatio) {
   return {
     id: nextCrusherBatchId,
     amount,
+    loadRatio,
     unloadingRemaining: amount,
-    unloadDuration: getCrusherUnloadDuration(amount),
+    unloadDuration: getCrusherUnloadDuration(loadRatio),
     processingAge: 0,
     processingDuration: getCrusherProcessingDuration(amount),
     phase: "unloading",
   };
 }
 
-function getCrusherUnloadDuration(amount) {
-  if (amount <= 0) return crusherUnloadDurationMin;
-  if (amount <= 5) return clamp(0.2 + (amount / 5) * 0.15, 0.2, 0.35);
-  if (amount <= 14) return clamp(0.35 + ((amount - 5) / 9) * 0.25, 0.35, 0.6);
-  return clamp(0.6 + ((amount - 14) / Math.max(maxScoopCapacity - 14, 1)) * 0.2, 0.6, crusherUnloadDurationMax);
+function getCrusherUnloadDuration(loadRatio) {
+  const ratio = clamp(loadRatio, 0, 1);
+  if (ratio <= 0) return 0;
+  if (ratio <= crusherSmallLoadRatioMax) {
+    const t = ratio / crusherSmallLoadRatioMax;
+    return lerp(crusherSmallUnloadDurationMin, crusherSmallUnloadDurationMax, t);
+  }
+
+  if (ratio <= crusherMediumLoadRatioMax) {
+    const t = (ratio - crusherSmallLoadRatioMax) / (crusherMediumLoadRatioMax - crusherSmallLoadRatioMax);
+    return lerp(crusherSmallUnloadDurationMax, crusherMediumUnloadDurationMax, t);
+  }
+
+  if (ratio <= crusherLargeLoadRatioMax) {
+    const t = (ratio - crusherMediumLoadRatioMax) / (crusherLargeLoadRatioMax - crusherMediumLoadRatioMax);
+    return lerp(crusherMediumUnloadDurationMax, crusherLargeUnloadDurationMax, t);
+  }
+
+  return crusherFullUnloadDuration;
 }
 
 function getCrusherProcessingDuration(amount) {
@@ -1943,6 +1998,10 @@ function random(min, max) {
 
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
+}
+
+function lerp(start, end, t) {
+  return start + (end - start) * clamp(t, 0, 1);
 }
 
 function handleKeyDown(event) {
