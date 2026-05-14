@@ -54,3 +54,41 @@ Still needs hands-on playtest in the browser:
 - whether the larger map feels sufficiently populated
 - whether edge/corner behavior feels acceptable during real mineral pushing
 - whether crusher selling still feels readable after driving away
+
+## P1-B Minimal Tool Switching Placeholders
+
+Scope:
+
+- active tool state
+- temporary keyboard switching with `1`, `2`, and `3`
+- Scoop / Drill / Hammer placeholder visuals
+- screen-fixed current-tool debug text
+- switching blocked while secured ore is carried
+
+Out of scope for P1-B:
+
+- segmented ore veins
+- drill mining
+- hammer burst mining
+- corridor test
+- merchants, base camp, cart cargo, blockers, push-blade mechanics, formal art, formal sound, Cocos migration, or mobile platform integration
+
+Manual checklist:
+
+- `1` switches to Scoop.
+- `2` switches to Drill.
+- `3` switches to Hammer.
+- Current tool debug text updates on screen and stays fixed while the camera moves.
+- Switching is blocked while the scoop has secured ore.
+- Blocked switching shows `Unload before switching tools`.
+- Switching works again after unloading.
+- Scoop still pushes, secures, unloads, and pays out ore normally.
+- Drill and Hammer do not mine, damage, spawn ore, secure ore, or affect loose ore with tool collision.
+- Camera follow, camera clamp, map boundaries, reverse movement, and push upgrade still work.
+
+Validation notes:
+
+- `node --check main.js` passed for P1-B.
+- P1-B assertion script passed for tool key selection, secured-load switch blocking, post-unload switching, placeholder non-capture behavior, and screen-space debug overlay routing.
+- Local static server returned 200 for `index.html`.
+- In-app browser reloaded `http://127.0.0.1:8000/index.html` with no console errors.

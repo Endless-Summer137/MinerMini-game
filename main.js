@@ -211,6 +211,48 @@ const BLADE_TYPES = {
   },
 };
 
+const TOOL_TYPES = {
+  scoop: {
+    id: "scoop",
+    displayName: "Scoop",
+    switchKey: "1",
+    behaviorType: "scoopCollect",
+    visualShape: "scoop",
+    bladeType: BLADE_TYPES.scoopBlade,
+  },
+  drill: {
+    id: "drill",
+    displayName: "Drill",
+    switchKey: "2",
+    behaviorType: "placeholder",
+    visualShape: "drill",
+    width: 28,
+    length: 46,
+    boundaryThickness: 10,
+    fillColor: "#607b82",
+    strokeColor: "#d5dedb",
+    accentColor: "#d9b35c",
+  },
+  hammer: {
+    id: "hammer",
+    displayName: "Hammer",
+    switchKey: "3",
+    behaviorType: "placeholder",
+    visualShape: "hammer",
+    width: 46,
+    length: 36,
+    boundaryThickness: 12,
+    fillColor: "#74665e",
+    strokeColor: "#e1d2b7",
+    accentColor: "#b86b4b",
+  },
+};
+
+const TOOL_KEY_BINDINGS = Object.values(TOOL_TYPES).reduce((bindings, tool) => {
+  bindings[tool.switchKey] = tool.id;
+  return bindings;
+}, {});
+
 const CRUSHER_TYPES = {
   embeddedGroundCrusher: {
     id: "embeddedGroundCrusher",
@@ -249,7 +291,6 @@ const UPGRADE_DEFS = {
 
 const activeVehicleChassis = VEHICLE_CHASSIS.prototypeHauler;
 const activeVehicleSkin = VEHICLE_SKINS.orangePrototype;
-const activeBladeType = BLADE_TYPES.scoopBlade;
 const activeCrusherType = CRUSHER_TYPES.embeddedGroundCrusher;
 const activeUpgradeDef = UPGRADE_DEFS.pushPower1;
 const canvas = document.getElementById("gameCanvas");
@@ -339,6 +380,9 @@ let crusherBatches = []; // Background crusher jobs created after fast unload.
 let nextCrusherBatchId = 1; // Stable id so delivered ore can notify its processing batch.
 let crusherRollerSpin = 0; // Visual rotation phase for the dual crusher shafts.
 let crusherLoopSoundActive = false; // Placeholder sound state to avoid repeated loop-start hooks.
+let activeTool = TOOL_TYPES.scoop; // P1-B active tool state. Only Scoop has gameplay behavior for now.
+let toolDebugNotice = ""; // Short screen-fixed debug feedback such as blocked switching.
+let toolDebugNoticeTimer = 0; // Seconds remaining before the tool debug notice disappears.
 
 function resetGame() {
   vehicle.x = getWorldCenterX();
@@ -355,6 +399,9 @@ function resetGame() {
   nextCrusherBatchId = 1;
   crusherRollerSpin = 0;
   crusherLoopSoundActive = false;
+  activeTool = TOOL_TYPES.scoop;
+  toolDebugNotice = "";
+  toolDebugNoticeTimer = 0;
   coins = 0;
   collected = 0;
   upgraded = false;
@@ -429,6 +476,7 @@ function update(time) {
   updateMinerals(dt);
   updateCrusherBatches(dt);
   updateParticles(dt);
+  updateToolDebugNotice(dt);
   updateCamera(dt);
   draw();
 
@@ -522,6 +570,7 @@ function getWorldBottomY(offset) {
 function updateVehicle(dt) {
   const input = getControlInput();
   const movement = getVehicleMovementIntent(input);
+  const scoopActive = isScoopToolActive();
 
   if (input.active && !movement.isReversing) {
     smoothFacing(input.x, input.y, dt);
@@ -529,7 +578,8 @@ function updateVehicle(dt) {
   vehicle.isReversing = movement.isReversing;
 
   const blade = getCurrentBladeConfig();
-  const currentLoad = input.active ? countScoopLoad(blade) : 0;
+  const toolBoundary = getCurrentToolBoundaryConfig(blade);
+  const currentLoad = input.active && scoopActive ? countScoopLoad(blade) : 0;
   const overload = getOverloadState(currentLoad);
   vehicle.overloadShake = overload.shake;
 
@@ -538,12 +588,12 @@ function updateVehicle(dt) {
   const speedMultiplier = movement.speedMultiplier * overload.speedMultiplier;
   vehicle.x += movement.x * vehicle.chassis.speed * input.strength * speedMultiplier * dt;
   vehicle.y += movement.y * vehicle.chassis.speed * input.strength * speedMultiplier * dt;
-  clampVehicleAndBladeToWalls(blade);
+  clampVehicleAndBladeToWalls(toolBoundary);
   vehicle.vx = (vehicle.x - previousX) / Math.max(dt, 0.001);
   vehicle.vy = (vehicle.y - previousY) / Math.max(dt, 0.001);
 
   separateVehicleBodyFromMinerals(dt);
-  const bladeContactCount = applyBladeLipCollisions(dt, blade, input.active);
+  const bladeContactCount = scoopActive ? applyBladeLipCollisions(dt, blade, input.active) : 0;
   pushingCount = input.active ? bladeContactCount : 0;
 }
 
@@ -1049,13 +1099,33 @@ function getPlayerPushPower() {
   return pushForce * getUpgradeEffect("chassis.pushPower", 1);
 }
 
-function getCurrentBladeConfig() {
-  const lipCollision = activeBladeType.lipCollision;
-  const assist = activeBladeType.specialAssist;
+function isScoopToolActive() {
+  return activeTool.behaviorType === "scoopCollect";
+}
+
+function getCurrentToolBoundaryConfig(blade = getCurrentBladeConfig()) {
+  if (isScoopToolActive()) return blade;
+
   return {
-    ...activeBladeType,
-    width: activeBladeType.width + getUpgradeEffect("blade.width", 0),
-    capacity: activeBladeType.capacity + getUpgradeEffect("blade.capacity", 0),
+    id: activeTool.id,
+    displayName: activeTool.displayName,
+    shape: activeTool.visualShape,
+    width: activeTool.width,
+    length: activeTool.length,
+    lipThickness: activeTool.boundaryThickness,
+    sideLipThickness: activeTool.boundaryThickness,
+    innerBackLipThickness: activeTool.boundaryThickness,
+  };
+}
+
+function getCurrentBladeConfig() {
+  const bladeType = TOOL_TYPES.scoop.bladeType;
+  const lipCollision = bladeType.lipCollision;
+  const assist = bladeType.specialAssist;
+  return {
+    ...bladeType,
+    width: bladeType.width + getUpgradeEffect("blade.width", 0),
+    capacity: bladeType.capacity + getUpgradeEffect("blade.capacity", 0),
     innerBackLipThickness: lipCollision.innerBackLipThickness,
     innerBackLipFriction: lipCollision.innerBackLipFriction,
     innerBackLipPushForce: lipCollision.innerBackLipPushForce,
@@ -1196,6 +1266,17 @@ function updateScoopCaptureCandidates(blade, dt) {
 
     secureMineral(mineral, blade);
     slots -= capacityCost;
+  }
+}
+
+function resetScoopCaptureCandidates() {
+  for (const mineral of minerals) {
+    if (mineral.state !== mineralState.captureCandidate) continue;
+    mineral.state = mineralState.looseOre;
+    mineral.captureDwell = 0;
+    mineral.insideRatio = 0;
+    mineral.containedInScoop = false;
+    mineral.containGrace = 0;
   }
 }
 
@@ -1494,6 +1575,7 @@ function completeCrusherBatch(batch) {
 
 function updateMinerals(dt) {
   const blade = getCurrentBladeConfig();
+  const scoopActive = isScoopToolActive();
   const passiveScoopResponse = { accelScale: 0, speedCap: maxMineralSpeed };
 
   for (let i = minerals.length - 1; i >= 0; i -= 1) {
@@ -1520,8 +1602,10 @@ function updateMinerals(dt) {
     const damping = Math.pow(mineralFriction, dt * 60);
     mineral.vx *= damping;
     mineral.vy *= damping;
-    applyScoopAreaDamping(mineral, dt);
-    resolveBladeLipContactsForMineral(mineral, blade, dt, passiveScoopResponse, null, false);
+    if (scoopActive) {
+      applyScoopAreaDamping(mineral, dt);
+      resolveBladeLipContactsForMineral(mineral, blade, dt, passiveScoopResponse, null, false);
+    }
     capMineralSpeed(mineral, maxMineralSpeed);
     mineral.shake = Math.max(0, mineral.shake - dt);
 
@@ -1534,8 +1618,12 @@ function updateMinerals(dt) {
 
   // Capture is evaluated after physics so minerals must actually settle into
   // the scoop for a moment before becoming secured.
-  updateScoopCaptureCandidates(blade, dt);
-  tryStartSecuredOreDelivery();
+  if (scoopActive) {
+    updateScoopCaptureCandidates(blade, dt);
+    tryStartSecuredOreDelivery();
+  } else {
+    resetScoopCaptureCandidates();
+  }
   syncScoopLoadCount();
   updateHud();
 }
@@ -1831,6 +1919,47 @@ function updateHud() {
   }
 }
 
+function switchToolByKey(key) {
+  const toolId = TOOL_KEY_BINDINGS[key];
+  if (!toolId) return false;
+  return trySwitchTool(toolId);
+}
+
+function trySwitchTool(toolId) {
+  const nextTool = TOOL_TYPES[toolId];
+  if (!nextTool || nextTool.id === activeTool.id) return false;
+
+  syncScoopLoadCount();
+  if (!canSwitchToolsNow()) {
+    showToolDebugNotice("Unload before switching tools", 1.35);
+    return false;
+  }
+
+  activeTool = nextTool;
+  resetScoopCaptureCandidates();
+  showToolDebugNotice(`${activeTool.displayName} selected`, 0.85);
+  updateHud();
+  return true;
+}
+
+function canSwitchToolsNow() {
+  return currentSecuredOre <= 0 && !minerals.some((mineral) => mineral.state === mineralState.securedOre);
+}
+
+function showToolDebugNotice(text, duration) {
+  toolDebugNotice = text;
+  toolDebugNoticeTimer = duration;
+}
+
+function updateToolDebugNotice(dt) {
+  if (toolDebugNoticeTimer <= 0) return;
+  toolDebugNoticeTimer -= dt;
+  if (toolDebugNoticeTimer <= 0) {
+    toolDebugNotice = "";
+    toolDebugNoticeTimer = 0;
+  }
+}
+
 function buyUpgrade() {
   if (!canBuyUpgrade(activeUpgradeDef)) return;
   spendUpgradeCosts(activeUpgradeDef);
@@ -1913,6 +2042,7 @@ function draw() {
   drawParticles("world");
   ctx.restore();
   drawParticles("screen");
+  drawToolDebugOverlay();
   drawJoystickOverlay();
   if (complete) drawCompletionBanner();
 }
@@ -2018,6 +2148,11 @@ function drawCrusherRoller(offsetX, direction, active) {
 }
 
 function drawBladeSurface() {
+  if (!isScoopToolActive()) {
+    drawPlaceholderToolSurface(activeTool);
+    return;
+  }
+
   const blade = getCurrentBladeConfig();
   const start = getBladeStart();
   const end = start + blade.length;
@@ -2037,14 +2172,40 @@ function drawBladeSurface() {
 }
 
 function drawBladeRimAndVehicle() {
-  const blade = getCurrentBladeConfig();
   const skin = vehicle.skin;
-  const start = getBladeStart();
-  const end = start + blade.length;
-  const halfWidth = blade.width / 2;
 
   ctx.save();
   applyVehicleDrawTransform();
+
+  if (isScoopToolActive()) {
+    drawScoopToolRim(getCurrentBladeConfig());
+  } else {
+    drawPlaceholderToolRim(activeTool);
+  }
+
+  ctx.fillStyle = skin.bodyFill;
+  ctx.strokeStyle = skin.bodyStroke;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.roundRect(-15, -11, 28, 22, 5);
+  ctx.fill();
+  ctx.stroke();
+
+  ctx.fillStyle = skin.cabinFill;
+  ctx.fillRect(-4, -7, 12, 14);
+
+  ctx.fillStyle = skin.treadFill;
+  ctx.fillRect(-12, -15, 8, 5);
+  ctx.fillRect(-12, 10, 8, 5);
+  ctx.fillRect(3, -15, 8, 5);
+  ctx.fillRect(3, 10, 8, 5);
+  ctx.restore();
+}
+
+function drawScoopToolRim(blade) {
+  const start = getBladeStart();
+  const end = start + blade.length;
+  const halfWidth = blade.width / 2;
 
   ctx.strokeStyle = "#d5a845";
   ctx.lineWidth = blade.lipThickness;
@@ -2069,23 +2230,113 @@ function drawBladeRimAndVehicle() {
   ctx.moveTo(start, halfWidth);
   ctx.lineTo(end, halfWidth);
   ctx.stroke();
+}
 
-  ctx.fillStyle = skin.bodyFill;
-  ctx.strokeStyle = skin.bodyStroke;
-  ctx.lineWidth = 2;
+function drawPlaceholderToolSurface(tool) {
+  ctx.save();
+  applyVehicleDrawTransform();
+  ctx.globalAlpha = 0.16;
+
+  if (tool.visualShape === "drill") {
+    drawDrillToolShape(tool, true);
+  } else if (tool.visualShape === "hammer") {
+    drawHammerToolShape(tool, true);
+  }
+
+  ctx.globalAlpha = 1;
+  ctx.restore();
+}
+
+function drawPlaceholderToolRim(tool) {
+  if (tool.visualShape === "drill") {
+    drawDrillToolShape(tool, false);
+  } else if (tool.visualShape === "hammer") {
+    drawHammerToolShape(tool, false);
+  }
+}
+
+function drawDrillToolShape(tool, surfaceOnly) {
+  const start = getBladeStart();
+  const end = start + tool.length;
+  const halfWidth = tool.width / 2;
+
+  ctx.fillStyle = surfaceOnly ? tool.fillColor : "#41565c";
+  ctx.strokeStyle = surfaceOnly ? tool.fillColor : tool.strokeColor;
+  ctx.lineWidth = surfaceOnly ? 1 : 3;
+  ctx.lineJoin = "round";
   ctx.beginPath();
-  ctx.roundRect(-15, -11, 28, 22, 5);
+  ctx.moveTo(start, -halfWidth * 0.58);
+  ctx.lineTo(end, 0);
+  ctx.lineTo(start, halfWidth * 0.58);
+  ctx.closePath();
   ctx.fill();
+  if (!surfaceOnly) ctx.stroke();
+
+  if (surfaceOnly) return;
+
+  ctx.strokeStyle = tool.accentColor;
+  ctx.lineWidth = 2;
+  for (let i = 0; i < 3; i += 1) {
+    const x = start + 8 + i * 10;
+    ctx.beginPath();
+    ctx.moveTo(x, -halfWidth * 0.38);
+    ctx.lineTo(x + 8, halfWidth * 0.24);
+    ctx.stroke();
+  }
+}
+
+function drawHammerToolShape(tool, surfaceOnly) {
+  const start = getBladeStart() + 6;
+  const headX = start + tool.length * 0.52;
+  const halfWidth = tool.width / 2;
+  const headWidth = tool.length * 0.64;
+  const headHeight = tool.width * 0.46;
+
+  ctx.fillStyle = surfaceOnly ? tool.fillColor : "#584d48";
+  ctx.strokeStyle = surfaceOnly ? tool.fillColor : tool.strokeColor;
+  ctx.lineWidth = surfaceOnly ? 1 : 3;
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  ctx.beginPath();
+  ctx.roundRect(headX - headWidth / 2, -headHeight / 2, headWidth, headHeight, 5);
+  ctx.fill();
+  if (!surfaceOnly) ctx.stroke();
+
+  if (surfaceOnly) return;
+
+  ctx.strokeStyle = tool.accentColor;
+  ctx.lineWidth = 5;
+  ctx.beginPath();
+  ctx.moveTo(start - 2, 0);
+  ctx.lineTo(headX - headWidth / 2, 0);
   ctx.stroke();
 
-  ctx.fillStyle = skin.cabinFill;
-  ctx.fillRect(-4, -7, 12, 14);
+  ctx.fillStyle = tool.accentColor;
+  ctx.beginPath();
+  ctx.arc(headX - headWidth / 2, -halfWidth * 0.2, 3, 0, Math.PI * 2);
+  ctx.arc(headX + headWidth / 2, halfWidth * 0.2, 3, 0, Math.PI * 2);
+  ctx.fill();
+}
 
-  ctx.fillStyle = skin.treadFill;
-  ctx.fillRect(-12, -15, 8, 5);
-  ctx.fillRect(-12, 10, 8, 5);
-  ctx.fillRect(3, -15, 8, 5);
-  ctx.fillRect(3, 10, 8, 5);
+function drawToolDebugOverlay() {
+  const panelWidth = 210;
+  const panelHeight = toolDebugNotice ? 42 : 24;
+  ctx.save();
+  ctx.font = "700 12px Arial";
+  ctx.textAlign = "left";
+  ctx.textBaseline = "top";
+  ctx.fillStyle = "rgba(24, 32, 35, 0.72)";
+  ctx.fillRect(10, 10, panelWidth, panelHeight);
+  ctx.strokeStyle = "rgba(244, 240, 223, 0.22)";
+  ctx.lineWidth = 1;
+  ctx.strokeRect(10, 10, panelWidth, panelHeight);
+  ctx.fillStyle = "#f4f0df";
+  ctx.fillText(`Tool: ${activeTool.displayName}`, 18, 16);
+  if (toolDebugNotice) {
+    ctx.font = "11px Arial";
+    ctx.fillStyle = "#f0c46b";
+    ctx.fillText(toolDebugNotice, 18, 32);
+  }
   ctx.restore();
 }
 
@@ -2399,6 +2650,12 @@ function lerp(start, end, t) {
 
 function handleKeyDown(event) {
   const key = event.key.toLowerCase();
+  if (TOOL_KEY_BINDINGS[key]) {
+    event.preventDefault();
+    switchToolByKey(key);
+    return;
+  }
+
   if (["arrowleft", "arrowright", "arrowup", "arrowdown", "a", "d", "w", "s"].includes(key)) {
     event.preventDefault();
     keys.add(key);

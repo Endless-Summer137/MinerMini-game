@@ -4,7 +4,7 @@ Last updated: 2026-05-14
 
 ## Current Goal
 
-P1-A is a larger-map and camera-follow checkpoint on top of the playable P0.5 mining scoop prototype. The default scoop blade should still behave like a passive solid physical scoop:
+P1-B is a minimal tool-switching checkpoint on top of the playable P1-A map/camera prototype. The default scoop blade should still behave like a passive solid physical scoop:
 
 - not magnetic
 - not one-way
@@ -26,6 +26,13 @@ P1-A is a larger-map and camera-follow checkpoint on top of the playable P0.5 mi
   - camera follows the vehicle with slight smoothing and clamps to map boundaries
   - UI, joystick, completion banner, and coin-to-HUD particles remain screen-fixed
   - crusher, minerals, vehicle, scoop, world particles, and map boundaries remain in world coordinates
+- P1-B minimal tool switching:
+  - `TOOL_TYPES` defines Scoop, Drill, and Hammer
+  - keyboard `1`, `2`, and `3` switch active tool as a temporary debug control
+  - current tool is shown as screen-fixed debug text on the canvas
+  - switching is blocked while secured ore is still carried in the scoop
+  - Scoop remains the only tool with ore collection, securing, delivery, and blade collision behavior
+  - Drill and Hammer are placeholder visuals only and do not mine, damage, spawn ore, or interact with veins
 - Load-based vehicle slowdown and shake.
 - Default scoop blade with a continuous U-shaped boundary.
 - Solid two-sided scoop lip collisions:
@@ -63,9 +70,17 @@ P1-A is a larger-map and camera-follow checkpoint on top of the playable P0.5 mi
 
 ## Latest Change
 
-Implemented P1-A larger test map, camera follow, and map boundaries while preserving P0.4/P0.5 gameplay feel.
+Implemented P1-B minimal tool switching placeholders while preserving P1-A map/camera behavior and P0.4/P0.5 scoop/crusher feel.
 
 Important implementation points in `main.js`:
+
+- `TOOL_TYPES` centralizes the current Scoop / Drill / Hammer data, including ids, display names, keyboard bindings, visual shape, dimensions, and placeholder behavior type.
+- `activeTool` starts as Scoop and can switch with keyboard `1`, `2`, and `3` only when no secured ore is being carried.
+- `canSwitchToolsNow` blocks switching while secured ore remains in the scoop and shows the temporary debug notice `Unload before switching tools`.
+- Scoop continues to use `BLADE_TYPES.scoopBlade`; Drill and Hammer draw different placeholder tool visuals but skip scoop lip collision, scoop capture, and crusher delivery checks.
+- `drawToolDebugOverlay` renders the current tool in screen space, outside the camera transform, so the text stays fixed while the map scrolls.
+
+Previous P1-A implementation points:
 
 - `viewport` now represents the canvas screen size, while `world` represents the larger playable map.
 - `MAP_CONFIG` keeps rectangular bounds for now, but boundary config is centralized for future irregular map boundaries.
@@ -144,6 +159,13 @@ Important implementation points in `main.js`:
   - zoom is clamped between configured min/max values
   - world-to-screen conversion respects camera zoom
   - UI and screen-space coin payout remain outside the camera transform
+- P1-B assertion script checked:
+  - default active tool is Scoop
+  - `1`, `2`, and `3` select Scoop, Drill, and Hammer
+  - switching is blocked while secured ore is carried
+  - switching works again after secured ore is gone
+  - Drill and Hammer do not run scoop collision/capture behavior
+  - debug overlay is drawn in screen space
 - P1-A VM draw/update smoke test passed.
 - `node --check main.js` for P0.5 data-table refactor.
 - P0.5 assertion script checked:
@@ -207,10 +229,11 @@ Important implementation points in `main.js`:
 - P0.5 creates extension data tables, but there is still only one active ore, blade, chassis, skin, crusher, and upgrade.
 - Upgrade prerequisites are data-shaped, but there is no multi-upgrade graph validator yet.
 - P1-A is still a test map, not formal level design.
+- P1-B only adds tool states and placeholder visuals; drill mining, hammer burst mining, segmented veins, and corridor tests are not implemented yet.
 
 ## Recommended Next Steps
 
-1. Manually playtest P1-A camera feel, map edges, crusher route, reverse movement, and mineral pushing.
+1. Manually playtest P1-B tool switching, especially blocked switching while carrying secured ore and post-unload switching.
 2. Add repeatable physics regression tests for scoop lip containment and map boundary clamps.
 3. Split `main.js` into modules before adding many P1/P2 content types.
 4. Tune scoop lip friction and restitution after more playtesting.
