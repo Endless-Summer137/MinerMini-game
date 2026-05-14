@@ -1,10 +1,10 @@
 # Miner Mini Game Progress
 
-Last updated: 2026-05-13
+Last updated: 2026-05-14
 
 ## Current Goal
 
-P0.5 is an architecture-readiness checkpoint on top of the playable P0.4 mining scoop prototype. The default scoop blade should still behave like a passive solid physical scoop:
+P1-A is a larger-map and camera-follow checkpoint on top of the playable P0.5 mining scoop prototype. The default scoop blade should still behave like a passive solid physical scoop:
 
 - not magnetic
 - not one-way
@@ -18,6 +18,12 @@ P0.5 is an architecture-readiness checkpoint on top of the playable P0.4 mining 
 - Reverse movement: strong opposite input moves backward without turning the scoop/blade around.
 - Mineral spawning, wall collision, mineral-mineral separation, side crusher sell-point, coins, and upgrade UI.
 - P0.5 data tables for future ore, blade, vehicle chassis, vehicle skin, crusher, and upgrade definitions.
+- P1-A larger test map:
+  - canvas stays a fixed 360 x 640 viewport
+  - world map is 720 x 1080 world pixels
+  - camera follows the vehicle with slight smoothing and clamps to map boundaries
+  - UI, joystick, completion banner, and coin-to-HUD particles remain screen-fixed
+  - crusher, minerals, vehicle, scoop, world particles, and map boundaries remain in world coordinates
 - Load-based vehicle slowdown and shake.
 - Default scoop blade with a continuous U-shaped boundary.
 - Solid two-sided scoop lip collisions:
@@ -55,9 +61,18 @@ P0.5 is an architecture-readiness checkpoint on top of the playable P0.4 mining 
 
 ## Latest Change
 
-Completed a P0.5 architecture readiness audit and light data-table refactor while preserving P0.4 gameplay feel.
+Implemented P1-A larger test map, camera follow, and map boundaries while preserving P0.4/P0.5 gameplay feel.
 
 Important implementation points in `main.js`:
+
+- `viewport` now represents the canvas screen size, while `world` represents the larger playable map.
+- `camera` follows the vehicle with `cameraFollowSmoothingTime` and clamps inside the map.
+- `draw` applies the camera transform only around world-space rendering.
+- `drawParticles("world")` and `drawParticles("screen")` keep ore dust in world space while coin payout particles can fly to fixed HUD space.
+- Vehicle and mineral wall clamps now use the larger map boundaries without changing the scoop collision model.
+- `mineralCount` increased to 84 so the larger test map still has enough loose ore for P0.4 scoop/crusher checks.
+
+Previous P0.5 implementation points:
 
 - `ORE_TYPES.basicOre` now owns radius, push resistance, capacity cost, reward values, colors, particles, and tags.
 - Mineral objects keep their ore type through loose, secured, delivered, and crusher payout states.
@@ -113,6 +128,14 @@ Important implementation points in `main.js`:
 
 ## Validation Already Run
 
+- `node --check main.js` for P1-A camera/map changes.
+- P1-A assertion script checked:
+  - viewport remains 360 x 640 while world is 720 x 1080
+  - camera clamps at map edges
+  - vehicle+scoop and minerals clamp inside the larger map
+  - reverse movement and push upgrade still work
+  - coin payout particles can use screen-space flight toward the HUD
+- P1-A VM draw/update smoke test passed.
 - `node --check main.js` for P0.5 data-table refactor.
 - P0.5 assertion script checked:
   - `basicOre` capacity cost and base coin data are preserved
@@ -126,6 +149,9 @@ Important implementation points in `main.js`:
   - `http://127.0.0.1:8000/index.html` returned 200
   - served `main.js` includes `ORE_TYPES`, `BLADE_TYPES`, `VEHICLE_CHASSIS`, `CRUSHER_TYPES`, and `UPGRADE_DEFS`
   - served `main.js` still has no old `const collector` object
+- Local static server check for P1-A:
+  - `http://127.0.0.1:8000/index.html` returned 200
+  - served `main.js` includes `camera`, `viewport`, `mapWidth`, and `mapHeight`
 - `node --check main.js` for P0.4 crusher sell-point changes.
 - P0.4 tuning assertion script checked:
   - empty load gives no unload duration
@@ -171,12 +197,13 @@ Important implementation points in `main.js`:
 - Sound hooks are placeholders only; no audio files or playback implementation exists yet.
 - P0.5 creates extension data tables, but there is still only one active ore, blade, chassis, skin, crusher, and upgrade.
 - Upgrade prerequisites are data-shaped, but there is no multi-upgrade graph validator yet.
+- P1-A is still a test map, not formal level design.
 
 ## Recommended Next Steps
 
-1. Add repeatable physics regression tests for scoop lip containment.
-2. Split `main.js` into modules before adding many P1/P2 content types.
-3. Playtest crusher placement, load-ratio unload timing, and reverse movement feel.
+1. Manually playtest P1-A camera feel, map edges, crusher route, reverse movement, and mineral pushing.
+2. Add repeatable physics regression tests for scoop lip containment and map boundary clamps.
+3. Split `main.js` into modules before adding many P1/P2 content types.
 4. Tune scoop lip friction and restitution after more playtesting.
 5. Add a debug collision overlay toggle.
 6. Improve mineral pile stability under high load.

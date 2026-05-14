@@ -1,6 +1,6 @@
-﻿const mineralCount = 60;
-// mineralCount controls how many rocks spawn on reset. Higher means denser piles
-// and a higher completion target because completionTarget is based on it.
+﻿const mineralCount = 84;
+// mineralCount controls how many rocks spawn on reset. P1-A raises it slightly
+// so the larger test map still has enough loose ore for scoop-feel checks.
 // Ore state is gameplay logic only. Secured ore must still draw like loose rocks
 // riding in the scoop, not like hidden inventory or grid slots.
 const mineralState = {
@@ -16,6 +16,9 @@ const inputDeadZone = 8; // Tiny drag/key noise below this distance is ignored.
 const facingSmoothingTime = 0.05; // Lower turns the scoop faster; higher makes steering feel heavier.
 const reverseDotThreshold = -0.78; // Input more opposite than this reverses instead of turning the scoop around.
 const reverseSpeedMultiplier = 0.72; // Reverse movement speed. Higher backs up faster while preserving scoop direction.
+const mapWidth = 720; // P1-A test-map width in world pixels. Larger than the 360px viewport.
+const mapHeight = 1080; // P1-A test-map height in world pixels. Large enough for camera-follow testing.
+const cameraFollowSmoothingTime = 0.08; // Lower follows tighter; higher feels floatier. Keep low for responsive P1-A control.
 
 const bladeWidth = 52; // Inner scoop span between side lips. Higher catches wider piles.
 const bladeLength = 38; // Back-to-front scoop depth. Higher gives more room before ore reaches the mouth.
@@ -246,12 +249,23 @@ const messageEl = document.getElementById("message");
 const upgradeButton = document.getElementById("upgradeButton");
 const resetButton = document.getElementById("resetButton");
 
-// World dimensions come from the canvas. world.wall is the solid border inset:
-// larger values make the playable area smaller and keep actors farther inside.
-const world = {
+// Canvas dimensions are the screen viewport; world dimensions are the larger
+// P1-A test map. Gameplay objects stay in world coordinates and camera handles
+// the screen transform.
+const viewport = {
   width: canvas.width,
   height: canvas.height,
-  wall: 18,
+};
+
+const world = {
+  width: mapWidth,
+  height: mapHeight,
+  wall: 24,
+};
+
+const camera = {
+  x: 0,
+  y: 0,
 };
 
 // The crusher sits off the main vertical traffic path so selling is deliberate
@@ -330,6 +344,7 @@ function resetGame() {
   pushingCount = 0;
   currentSecuredOre = 0;
   lastTime = performance.now();
+  resetCameraToVehicle();
   messageEl.textContent = "Scoop ore, then unload at the side crusher.";
   canvas.focus();
   updateHud();
@@ -394,9 +409,45 @@ function update(time) {
   updateMinerals(dt);
   updateCrusherBatches(dt);
   updateParticles(dt);
+  updateCamera(dt);
   draw();
 
   requestAnimationFrame(update);
+}
+
+function resetCameraToVehicle() {
+  const target = getCameraTarget();
+  camera.x = target.x;
+  camera.y = target.y;
+  clampCamera();
+}
+
+function updateCamera(dt) {
+  const target = getCameraTarget();
+  const alpha = 1 - Math.exp(-dt / cameraFollowSmoothingTime);
+  camera.x += (target.x - camera.x) * alpha;
+  camera.y += (target.y - camera.y) * alpha;
+  clampCamera();
+}
+
+function getCameraTarget() {
+  return {
+    x: vehicle.x - viewport.width / 2,
+    y: vehicle.y - viewport.height / 2,
+  };
+}
+
+function clampCamera() {
+  camera.x = clamp(camera.x, 0, Math.max(0, world.width - viewport.width));
+  camera.y = clamp(camera.y, 0, Math.max(0, world.height - viewport.height));
+}
+
+function applyCameraTransform() {
+  ctx.translate(-camera.x, -camera.y);
+}
+
+function worldToScreen(x, y) {
+  return { x: x - camera.x, y: y - camera.y };
 }
 
 function updateVehicle(dt) {
@@ -1610,15 +1661,17 @@ function spawnCoinPayout(amount) {
   for (let i = 0; i < coinCount; i += 1) {
     const remainingCoins = coinCount - i;
     const value = Math.ceil(remainingValue / remainingCoins);
-    const startX = crusher.x + random(-crusher.pitWidth * 0.28, crusher.pitWidth * 0.28);
-    const startY = crusher.y + random(-crusher.pitHeight * 0.24, crusher.pitHeight * 0.24);
+    const worldStartX = crusher.x + random(-crusher.pitWidth * 0.28, crusher.pitWidth * 0.28);
+    const worldStartY = crusher.y + random(-crusher.pitHeight * 0.24, crusher.pitHeight * 0.24);
+    const start = getPayoutScreenStart(worldStartX, worldStartY);
     remainingValue -= value;
     particles.push({
       kind: "coin",
-      x: startX,
-      y: startY,
-      startX,
-      startY,
+      space: "screen",
+      x: start.x,
+      y: start.y,
+      startX: start.x,
+      startY: start.y,
       targetX: target.x + random(-6, 6),
       targetY: target.y + random(-3, 3),
       value,
@@ -1630,6 +1683,14 @@ function spawnCoinPayout(amount) {
   }
 }
 
+function getPayoutScreenStart(worldX, worldY) {
+  const screen = worldToScreen(worldX, worldY);
+  return {
+    x: clamp(screen.x, 12, viewport.width - 12),
+    y: clamp(screen.y, 12, viewport.height - 12),
+  };
+}
+
 function getCoinHudCanvasTarget() {
   const canvasRect = canvas.getBoundingClientRect();
   const coinRect = coinsEl.getBoundingClientRect();
@@ -1638,8 +1699,8 @@ function getCoinHudCanvasTarget() {
   }
 
   return {
-    x: clamp(((coinRect.left + coinRect.width / 2 - canvasRect.left) / canvasRect.width) * canvas.width, 12, world.width - 12),
-    y: ((coinRect.top + coinRect.height / 2 - canvasRect.top) / canvasRect.height) * canvas.height,
+    x: clamp(((coinRect.left + coinRect.width / 2 - canvasRect.left) / canvasRect.width) * viewport.width, 12, viewport.width - 12),
+    y: ((coinRect.top + coinRect.height / 2 - canvasRect.top) / canvasRect.height) * viewport.height,
   };
 }
 
@@ -1778,13 +1839,17 @@ function formatUpgradeCosts(upgradeDef) {
 }
 
 function draw() {
-  ctx.clearRect(0, 0, world.width, world.height);
+  ctx.clearRect(0, 0, viewport.width, viewport.height);
+  ctx.save();
+  applyCameraTransform();
   drawGround();
   drawCrusher();
   drawBladeSurface();
   for (const mineral of minerals) drawMineral(mineral);
   drawBladeRimAndVehicle();
-  drawParticles();
+  drawParticles("world");
+  ctx.restore();
+  drawParticles("screen");
   drawJoystickOverlay();
   if (complete) drawCompletionBanner();
 }
@@ -2009,8 +2074,9 @@ function getMineralDrawPosition(mineral) {
   return bladeLocalToWorld(local.x, local.y);
 }
 
-function drawParticles() {
+function drawParticles(space = "world") {
   for (const particle of particles) {
+    if ((particle.space || "world") !== space) continue;
     if (particle.age < 0) continue;
     const t = particle.age / particle.life;
     ctx.globalAlpha = 1 - t;
@@ -2087,7 +2153,7 @@ function drawCompletionBanner() {
   ctx.font = "700 28px Arial";
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
-  ctx.fillText("Area Cleared", world.width / 2, 314);
+  ctx.fillText("Area Cleared", viewport.width / 2, 314);
 }
 
 function getBladeStart() {
