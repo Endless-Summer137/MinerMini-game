@@ -18,6 +18,12 @@ const reverseDotThreshold = -0.78; // Input more opposite than this reverses ins
 const reverseSpeedMultiplier = 0.72; // Reverse movement speed. Higher backs up faster while preserving scoop direction.
 const mapWidth = 720; // P1-A test-map width in world pixels. Larger than the 360px viewport.
 const mapHeight = 1080; // P1-A test-map height in world pixels. Large enough for camera-follow testing.
+const MAP_CONFIG = {
+  worldBounds: { x: 0, y: 0, width: mapWidth, height: mapHeight },
+  boundaryMode: "rect", // P1-A still uses rectangular bounds; future modes can branch from this value.
+  wallThickness: 24, // Visual and collision inset. Higher shrinks the playable rectangle.
+  collisionZones: [], // Reserved data hook for future rock walls or invisible zones; unused in P1-A.
+};
 const cameraFollowSmoothingTime = 0.08; // Lower follows tighter; higher feels floatier. Keep low for responsive P1-A control.
 const CAMERA_CONFIG = {
   zoom: 1.0, // Larger zoom is closer with fewer world objects visible; smaller zoom shows more map.
@@ -265,9 +271,13 @@ const viewport = {
 };
 
 const world = {
-  width: mapWidth,
-  height: mapHeight,
-  wall: 24,
+  x: MAP_CONFIG.worldBounds.x,
+  y: MAP_CONFIG.worldBounds.y,
+  width: MAP_CONFIG.worldBounds.width,
+  height: MAP_CONFIG.worldBounds.height,
+  wall: MAP_CONFIG.wallThickness,
+  boundaryMode: MAP_CONFIG.boundaryMode,
+  collisionZones: MAP_CONFIG.collisionZones,
 };
 
 const camera = {
@@ -280,8 +290,8 @@ const camera = {
 // but still reachable as a quick side unload bay.
 const crusher = {
   type: activeCrusherType,
-  x: world.wall + 66,
-  y: 108,
+  x: getPlayableBounds().minX + 66,
+  y: getWorldBounds().y + 108,
   sellRadius: crusherSellRadius,
   pitWidth: crusherProcessingPitWidth,
   pitHeight: crusherProcessingPitHeight,
@@ -290,8 +300,8 @@ const crusher = {
 // Vehicle position, facing, and motion. bodyRadius is the physical body contact
 // size; radius is the larger drawn/footprint size used by wall clamping.
 const vehicle = {
-  x: world.width / 2,
-  y: world.height - 78,
+  x: getWorldCenterX(),
+  y: getWorldBottomY(78),
   chassis: activeVehicleChassis,
   skin: activeVehicleSkin,
   radius: activeVehicleChassis.radius,
@@ -331,8 +341,8 @@ let crusherRollerSpin = 0; // Visual rotation phase for the dual crusher shafts.
 let crusherLoopSoundActive = false; // Placeholder sound state to avoid repeated loop-start hooks.
 
 function resetGame() {
-  vehicle.x = world.width / 2;
-  vehicle.y = world.height - 78;
+  vehicle.x = getWorldCenterX();
+  vehicle.y = getWorldBottomY(78);
   vehicle.dirX = 0;
   vehicle.dirY = -1;
   vehicle.isReversing = false;
@@ -361,6 +371,8 @@ function resetGame() {
 function createMinerals() {
   const spawned = [];
   let attempts = 0;
+  const spawnXBounds = getPlayableBounds(28);
+  const spawnYBounds = getPlayableBounds(44);
 
   while (spawned.length < mineralCount && attempts < mineralCount * 80) {
     attempts += 1;
@@ -368,8 +380,8 @@ function createMinerals() {
     // Each mineral keeps both physics data and P0.3 scoop-state data. The
     // secured/delivery fields stay dormant while the mineral is loose.
     const mineral = {
-      x: random(world.wall + 28, world.width - world.wall - 28),
-      y: random(crusher.y + crusher.sellRadius + 42, world.height - world.wall - 44),
+      x: random(spawnXBounds.minX, spawnXBounds.maxX),
+      y: random(crusher.y + crusher.sellRadius + 42, spawnYBounds.maxY),
       vx: 0,
       vy: 0,
       radius: oreType.radius,
@@ -449,8 +461,11 @@ function getCameraTarget() {
 
 function clampCamera() {
   if (!CAMERA_CONFIG.clampToMapBounds) return;
-  camera.x = clamp(camera.x, 0, Math.max(0, world.width - getCameraViewWidth()));
-  camera.y = clamp(camera.y, 0, Math.max(0, world.height - getCameraViewHeight()));
+  const bounds = getWorldBounds();
+  const maxX = bounds.x + Math.max(0, bounds.width - getCameraViewWidth());
+  const maxY = bounds.y + Math.max(0, bounds.height - getCameraViewHeight());
+  camera.x = clamp(camera.x, bounds.x, maxX);
+  camera.y = clamp(camera.y, bounds.y, maxY);
 }
 
 function applyCameraTransform() {
@@ -475,6 +490,33 @@ function getCameraViewWidth() {
 
 function getCameraViewHeight() {
   return viewport.height / camera.zoom;
+}
+
+function getWorldBounds() {
+  return MAP_CONFIG.worldBounds;
+}
+
+function getPlayableBounds(radius = 0) {
+  // Rect mode is the only active P1-A boundary solver. Future irregular modes
+  // should branch here so vehicle/mineral/camera code keeps a stable interface.
+  const bounds = getWorldBounds();
+  const inset = MAP_CONFIG.wallThickness + radius;
+  return {
+    minX: bounds.x + inset,
+    maxX: bounds.x + bounds.width - inset,
+    minY: bounds.y + inset,
+    maxY: bounds.y + bounds.height - inset,
+  };
+}
+
+function getWorldCenterX() {
+  const bounds = getWorldBounds();
+  return bounds.x + bounds.width / 2;
+}
+
+function getWorldBottomY(offset) {
+  const bounds = getWorldBounds();
+  return bounds.y + bounds.height - offset;
 }
 
 function updateVehicle(dt) {
@@ -1499,36 +1541,33 @@ function updateMinerals(dt) {
 }
 
 function resolveWallContact(mineral) {
-  const minX = world.wall + mineral.radius;
-  const maxX = world.width - world.wall - mineral.radius;
-  const minY = world.wall + mineral.radius;
-  const maxY = world.height - world.wall - mineral.radius;
+  const bounds = getPlayableBounds(mineral.radius);
 
-  if (mineral.x < minX) {
-    mineral.x = minX;
+  if (mineral.x < bounds.minX) {
+    mineral.x = bounds.minX;
     if (mineral.vx < 0) mineral.vx = -mineral.vx * wallBounceFactor;
-  } else if (mineral.x <= minX + wallContactTolerance && mineral.vx < 0) {
+  } else if (mineral.x <= bounds.minX + wallContactTolerance && mineral.vx < 0) {
     mineral.vx = -mineral.vx * wallBounceFactor;
   }
 
-  if (mineral.x > maxX) {
-    mineral.x = maxX;
+  if (mineral.x > bounds.maxX) {
+    mineral.x = bounds.maxX;
     if (mineral.vx > 0) mineral.vx = -mineral.vx * wallBounceFactor;
-  } else if (mineral.x >= maxX - wallContactTolerance && mineral.vx > 0) {
+  } else if (mineral.x >= bounds.maxX - wallContactTolerance && mineral.vx > 0) {
     mineral.vx = -mineral.vx * wallBounceFactor;
   }
 
-  if (mineral.y < minY) {
-    mineral.y = minY;
+  if (mineral.y < bounds.minY) {
+    mineral.y = bounds.minY;
     if (mineral.vy < 0) mineral.vy = -mineral.vy * wallBounceFactor;
-  } else if (mineral.y <= minY + wallContactTolerance && mineral.vy < 0) {
+  } else if (mineral.y <= bounds.minY + wallContactTolerance && mineral.vy < 0) {
     mineral.vy = -mineral.vy * wallBounceFactor;
   }
 
-  if (mineral.y > maxY) {
-    mineral.y = maxY;
+  if (mineral.y > bounds.maxY) {
+    mineral.y = bounds.maxY;
     if (mineral.vy > 0) mineral.vy = -mineral.vy * wallBounceFactor;
-  } else if (mineral.y >= maxY - wallContactTolerance && mineral.vy > 0) {
+  } else if (mineral.y >= bounds.maxY - wallContactTolerance && mineral.vy > 0) {
     mineral.vy = -mineral.vy * wallBounceFactor;
   }
 }
@@ -1552,18 +1591,15 @@ function applyStuckCorrection(mineral, dt) {
 }
 
 function getWallInwardVector(mineral) {
-  const minX = world.wall + mineral.radius;
-  const maxX = world.width - world.wall - mineral.radius;
-  const minY = world.wall + mineral.radius;
-  const maxY = world.height - world.wall - mineral.radius;
+  const bounds = getPlayableBounds(mineral.radius);
   const nearDistance = wallContactTolerance + 2;
   let x = 0;
   let y = 0;
 
-  if (mineral.x <= minX + nearDistance) x += 1;
-  if (mineral.x >= maxX - nearDistance) x -= 1;
-  if (mineral.y <= minY + nearDistance) y += 1;
-  if (mineral.y >= maxY - nearDistance) y -= 1;
+  if (mineral.x <= bounds.minX + nearDistance) x += 1;
+  if (mineral.x >= bounds.maxX - nearDistance) x -= 1;
+  if (mineral.y <= bounds.minY + nearDistance) y += 1;
+  if (mineral.y >= bounds.maxY - nearDistance) y -= 1;
 
   return { x, y };
 }
@@ -1882,27 +1918,31 @@ function draw() {
 }
 
 function drawGround() {
+  const bounds = getWorldBounds();
+  const playableBounds = getPlayableBounds();
+  const wall = MAP_CONFIG.wallThickness;
+
   ctx.fillStyle = "#31251e";
-  ctx.fillRect(0, 0, world.width, world.height);
+  ctx.fillRect(bounds.x, bounds.y, bounds.width, bounds.height);
 
   ctx.fillStyle = "#182023";
-  ctx.fillRect(0, 0, world.width, world.wall);
-  ctx.fillRect(0, world.height - world.wall, world.width, world.wall);
-  ctx.fillRect(0, 0, world.wall, world.height);
-  ctx.fillRect(world.width - world.wall, 0, world.wall, world.height);
+  ctx.fillRect(bounds.x, bounds.y, bounds.width, wall);
+  ctx.fillRect(bounds.x, bounds.y + bounds.height - wall, bounds.width, wall);
+  ctx.fillRect(bounds.x, bounds.y, wall, bounds.height);
+  ctx.fillRect(bounds.x + bounds.width - wall, bounds.y, wall, bounds.height);
 
   ctx.strokeStyle = "rgba(244, 240, 223, 0.06)";
   ctx.lineWidth = 1;
-  for (let x = world.wall; x <= world.width - world.wall; x += 36) {
+  for (let x = playableBounds.minX; x <= playableBounds.maxX; x += 36) {
     ctx.beginPath();
-    ctx.moveTo(x, world.wall);
-    ctx.lineTo(x, world.height - world.wall);
+    ctx.moveTo(x, playableBounds.minY);
+    ctx.lineTo(x, playableBounds.maxY);
     ctx.stroke();
   }
-  for (let y = world.wall; y <= world.height - world.wall; y += 36) {
+  for (let y = playableBounds.minY; y <= playableBounds.maxY; y += 36) {
     ctx.beginPath();
-    ctx.moveTo(world.wall, y);
-    ctx.lineTo(world.width - world.wall, y);
+    ctx.moveTo(playableBounds.minX, y);
+    ctx.lineTo(playableBounds.maxX, y);
     ctx.stroke();
   }
 }
@@ -2260,8 +2300,9 @@ function getOverlap(a, b) {
 }
 
 function clampToWalls(body, radius) {
-  body.x = clamp(body.x, world.wall + radius, world.width - world.wall - radius);
-  body.y = clamp(body.y, world.wall + radius, world.height - world.wall - radius);
+  const bounds = getPlayableBounds(radius);
+  body.x = clamp(body.x, bounds.minX, bounds.maxX);
+  body.y = clamp(body.y, bounds.minY, bounds.maxY);
 }
 
 function clampVehicleAndBladeToWalls(blade = getCurrentBladeConfig()) {
@@ -2275,19 +2316,20 @@ function clampVehicleAndBladeToWalls(blade = getCurrentBladeConfig()) {
 
 function getVehicleAndBladeWallCorrection(blade) {
   const bounds = getVehicleAndBladeWorldBounds(blade);
+  const playableBounds = getPlayableBounds();
   let x = 0;
   let y = 0;
 
-  if (bounds.minX < world.wall) {
-    x = world.wall - bounds.minX;
-  } else if (bounds.maxX > world.width - world.wall) {
-    x = world.width - world.wall - bounds.maxX;
+  if (bounds.minX < playableBounds.minX) {
+    x = playableBounds.minX - bounds.minX;
+  } else if (bounds.maxX > playableBounds.maxX) {
+    x = playableBounds.maxX - bounds.maxX;
   }
 
-  if (bounds.minY < world.wall) {
-    y = world.wall - bounds.minY;
-  } else if (bounds.maxY > world.height - world.wall) {
-    y = world.height - world.wall - bounds.maxY;
+  if (bounds.minY < playableBounds.minY) {
+    y = playableBounds.minY - bounds.minY;
+  } else if (bounds.maxY > playableBounds.maxY) {
+    y = playableBounds.maxY - bounds.maxY;
   }
 
   return { x, y };

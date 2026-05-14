@@ -21,6 +21,7 @@ P1-A is a larger-map and camera-follow checkpoint on top of the playable P0.5 mi
 - P1-A larger test map:
   - canvas stays a fixed 360 x 640 viewport
   - world map is 720 x 1080 world pixels
+  - `MAP_CONFIG` keeps rectangular bounds for now, but centralizes boundary config for future irregular map boundaries
   - `CAMERA_CONFIG` reserves zoom, min/max zoom, follow smoothing, and map clamp settings
   - camera follows the vehicle with slight smoothing and clamps to map boundaries
   - UI, joystick, completion banner, and coin-to-HUD particles remain screen-fixed
@@ -67,6 +68,7 @@ Implemented P1-A larger test map, camera follow, and map boundaries while preser
 Important implementation points in `main.js`:
 
 - `viewport` now represents the canvas screen size, while `world` represents the larger playable map.
+- `MAP_CONFIG` keeps rectangular bounds for now, but boundary config is centralized for future irregular map boundaries.
 - `CAMERA_CONFIG` centralizes camera zoom, min/max zoom, follow smoothing, and boundary clamp behavior for future mobile/performance tuning.
 - `camera` follows the vehicle with configurable smoothing and clamps inside the map using the current zoomed view size.
 - `draw` applies the camera transform only around world-space rendering.

@@ -8,6 +8,7 @@ Scope:
 - camera follows vehicle
 - camera zoom configuration reserved for future mobile/performance tuning
 - map boundaries
+- centralized rectangular boundary config for future irregular map boundaries
 - screen-fixed UI
 
 Out of scope for P1-A:
@@ -24,6 +25,7 @@ Manual checklist:
 - Vehicle can drive across the larger map without camera jitter.
 - Camera follows the vehicle smoothly but does not feel floaty.
 - Camera clamps at all map edges.
+- P1-A keeps rectangular bounds for now, but boundary config is centralized for future irregular map boundaries.
 - Changing `CAMERA_CONFIG.zoom` locally should change how much world is visible without moving UI.
 - Top HUD, controls, message, joystick, and completion banner stay screen-fixed.
 - Crusher remains in world space and still unloads secured ore.
@@ -40,6 +42,7 @@ Validation notes:
 - `node --check main.js` passed for P1-A.
 - VM assertion script passed for camera clamp, viewport/world size split, boundary clamps, reverse movement, push upgrade, and screen-space coin payout.
 - Camera zoom supplement assertion passed for default zoom, min/max clamping, zoomed camera bounds, and world-to-screen conversion.
+- Boundary config supplement assertion passed for `MAP_CONFIG` rectangular bounds, unchanged wall inset behavior, camera clamp, and vehicle/mineral wall clamps.
 - VM draw/update smoke test passed.
 - Local static server returned 200 for `index.html`.
 - Served `main.js` included `CAMERA_CONFIG`, `camera`, `viewport`, `mapWidth`, and `mapHeight`.
