@@ -62,6 +62,7 @@ Scope:
 - active tool state
 - temporary keyboard switching with `1`, `2`, and `3`
 - Scoop / Drill / Hammer placeholder visuals
+- Drill / Hammer push-only loose ore contact
 - screen-fixed current-tool debug text
 - switching blocked while secured ore is carried
 
@@ -83,12 +84,14 @@ Manual checklist:
 - Blocked switching shows `Unload before switching tools`.
 - Switching works again after unloading.
 - Scoop still pushes, secures, unloads, and pays out ore normally.
-- Drill and Hammer do not mine, damage, spawn ore, secure ore, or affect loose ore with tool collision.
+- Drill pushes loose ore instead of passing through it.
+- Hammer pushes loose ore instead of passing through it.
+- Drill and Hammer do not mine, damage, spawn ore, or secure ore.
 - Camera follow, camera clamp, map boundaries, reverse movement, and push upgrade still work.
 
 Validation notes:
 
 - `node --check main.js` passed for P1-B.
-- P1-B assertion script passed for tool key selection, secured-load switch blocking, post-unload switching, placeholder non-capture behavior, and screen-space debug overlay routing.
+- P1-B follow-up assertion script passed for Drill/Hammer push-only contact, no secured ore creation, tool key selection, secured-load switch blocking, post-unload switching, and screen-space debug overlay routing.
 - Local static server returned 200 for `index.html`.
 - In-app browser reloaded `http://127.0.0.1:8000/index.html` with no console errors.

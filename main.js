@@ -75,6 +75,8 @@ const mineralContactSlop = 0.02; // Tiny overlap ignored to prevent constant mic
 const mineralDampingInsideScoop = 1; // Extra damping hook for loose ore inside scoop. 1 means no extra damping.
 const physicsSubsteps = 3; // Scoop collision substeps per frame. Higher reduces tunneling at higher CPU cost.
 const maxImpulsePerMineralPerFrame = 36; // Caps shove impulses so squeezed ore cannot launch too violently.
+const pushOnlyToolRestitution = 0.03; // Drill/Hammer ore bounce. Keep low so placeholder tools feel heavy, not springy.
+const pushOnlyToolFriction = 0.86; // Tangential damping on push-only tools. Lower grips more; higher lets ore slide more.
 
 const wallBounceFactor = 0.22; // Mineral bounce after hitting world walls. Lower feels heavier.
 const wallContactTolerance = 3; // Distance treated as near-wall for stuck checks.
@@ -216,7 +218,7 @@ const TOOL_TYPES = {
     id: "scoop",
     displayName: "Scoop",
     switchKey: "1",
-    behaviorType: "scoopCollect",
+    behaviorType: "scoopSecure",
     visualShape: "scoop",
     bladeType: BLADE_TYPES.scoopBlade,
   },
@@ -224,7 +226,7 @@ const TOOL_TYPES = {
     id: "drill",
     displayName: "Drill",
     switchKey: "2",
-    behaviorType: "placeholder",
+    behaviorType: "pushOnly",
     visualShape: "drill",
     width: 28,
     length: 46,
@@ -232,12 +234,14 @@ const TOOL_TYPES = {
     fillColor: "#607b82",
     strokeColor: "#d5dedb",
     accentColor: "#d9b35c",
+    contactRestitution: pushOnlyToolRestitution,
+    contactFriction: pushOnlyToolFriction,
   },
   hammer: {
     id: "hammer",
     displayName: "Hammer",
     switchKey: "3",
-    behaviorType: "placeholder",
+    behaviorType: "pushOnly",
     visualShape: "hammer",
     width: 46,
     length: 36,
@@ -245,6 +249,8 @@ const TOOL_TYPES = {
     fillColor: "#74665e",
     strokeColor: "#e1d2b7",
     accentColor: "#b86b4b",
+    contactRestitution: pushOnlyToolRestitution,
+    contactFriction: pushOnlyToolFriction,
   },
 };
 
@@ -594,7 +600,9 @@ function updateVehicle(dt) {
 
   separateVehicleBodyFromMinerals(dt);
   const bladeContactCount = scoopActive ? applyBladeLipCollisions(dt, blade, input.active) : 0;
+  const toolContactCount = isPushOnlyToolActive() ? applyPushOnlyToolCollisions(dt, activeTool) : 0;
   pushingCount = input.active ? bladeContactCount : 0;
+  if (!scoopActive && input.active) pushingCount = toolContactCount;
 }
 
 function getVehicleMovementIntent(input) {
@@ -793,6 +801,176 @@ function applyBladeLipCollisions(dt, blade = getCurrentBladeConfig(), allowBackP
   }
 
   return loadCount;
+}
+
+function applyPushOnlyToolCollisions(dt, tool) {
+  let contactCount = 0;
+  const subDt = dt / physicsSubsteps;
+
+  // Push-only tools are solid heads, but not scoops: they displace loose ore
+  // with moving-wall response and never create capture candidates or secured ore.
+  for (let step = 0; step < physicsSubsteps; step += 1) {
+    for (const mineral of minerals) {
+      if (!isPhysicalOre(mineral)) continue;
+      const result = resolvePushOnlyToolContactsForMineral(mineral, tool, subDt);
+      if (step === 0 && result.anyContact) contactCount += 1;
+      capMineralSpeed(mineral, maxMineralSpeed);
+      resolveWallContact(mineral);
+    }
+  }
+
+  return contactCount;
+}
+
+function resolvePushOnlyToolContactsForMineral(mineral, tool, dt) {
+  const contacts = getPushOnlyToolContacts(mineral, tool);
+
+  for (const contact of contacts) {
+    resolvePushOnlyToolContact(mineral, tool, contact, dt);
+  }
+
+  return { anyContact: contacts.length > 0 };
+}
+
+function resolvePushOnlyToolContact(mineral, tool, contact, dt) {
+  const normal = localToWorldVector(contact.normal.x, contact.normal.y);
+  const correction = Math.min(contact.depth + 0.01, maxScoopLipCorrectionPerSubstep);
+  mineral.x += normal.x * correction;
+  mineral.y += normal.y * correction;
+  applyMovingWallVelocityResponse(mineral, normal, tool.contactRestitution, tool.contactFriction);
+
+  // A tiny shake makes the contact readable without implying damage or mining.
+  mineral.shake = Math.max(mineral.shake, Math.min(0.12, dt * 4));
+}
+
+function getPushOnlyToolContacts(mineral, tool) {
+  const local = worldToBladeLocal(mineral.x, mineral.y);
+  const contacts = [];
+
+  for (const collider of getPushOnlyToolColliders(tool)) {
+    const contact = collider.type === "circle"
+      ? getCircleToolContact(mineral, collider, local)
+      : getSegmentToolContact(mineral, collider, local);
+    if (contact) contacts.push(contact);
+  }
+
+  return contacts.sort((a, b) => b.depth - a.depth);
+}
+
+function getPushOnlyToolColliders(tool) {
+  if (tool.visualShape === "drill") return getDrillToolColliders(tool);
+  if (tool.visualShape === "hammer") return getHammerToolColliders(tool);
+  return [];
+}
+
+function getDrillToolColliders(tool) {
+  const start = getBladeStart();
+  const end = start + tool.length;
+  const halfWidth = tool.width / 2;
+
+  return [
+    {
+      type: "segment",
+      kind: "drillBody",
+      ax: start + 2,
+      ay: 0,
+      bx: end - 4,
+      by: 0,
+      radius: halfWidth * 0.5,
+    },
+    {
+      type: "circle",
+      kind: "drillTip",
+      cx: end - 2,
+      cy: 0,
+      radius: halfWidth * 0.28,
+    },
+  ];
+}
+
+function getHammerToolColliders(tool) {
+  const metrics = getHammerToolMetrics(tool);
+
+  return [
+    {
+      type: "segment",
+      kind: "hammerHead",
+      ax: metrics.headX,
+      ay: -metrics.headHeight / 2,
+      bx: metrics.headX,
+      by: metrics.headHeight / 2,
+      radius: metrics.headWidth / 2,
+    },
+    {
+      type: "segment",
+      kind: "hammerHandle",
+      ax: metrics.start - 2,
+      ay: 0,
+      bx: metrics.headX - metrics.headWidth / 2,
+      by: 0,
+      radius: 3,
+    },
+  ];
+}
+
+function getSegmentToolContact(mineral, collider, local) {
+  const segmentX = collider.bx - collider.ax;
+  const segmentY = collider.by - collider.ay;
+  const segmentLengthSq = segmentX * segmentX + segmentY * segmentY;
+  const t = segmentLengthSq > 0.001
+    ? clamp(((local.x - collider.ax) * segmentX + (local.y - collider.ay) * segmentY) / segmentLengthSq, 0, 1)
+    : 0;
+  const closestX = collider.ax + segmentX * t;
+  const closestY = collider.ay + segmentY * t;
+  return getToolContactFromClosestPoint(mineral, collider, local, closestX, closestY);
+}
+
+function getCircleToolContact(mineral, collider, local) {
+  return getToolContactFromClosestPoint(mineral, collider, local, collider.cx, collider.cy);
+}
+
+function getToolContactFromClosestPoint(mineral, collider, local, closestX, closestY) {
+  const dx = local.x - closestX;
+  const dy = local.y - closestY;
+  const distanceSq = dx * dx + dy * dy;
+  const combinedRadius = mineral.radius + collider.radius;
+  if (distanceSq >= combinedRadius * combinedRadius) return null;
+
+  const distanceBetween = Math.sqrt(distanceSq);
+  const normal = distanceBetween > 0.001
+    ? { x: dx / distanceBetween, y: dy / distanceBetween }
+    : getToolContactFallbackNormal(collider, local);
+
+  return {
+    kind: collider.kind,
+    depth: combinedRadius - distanceBetween,
+    normal,
+  };
+}
+
+function getToolContactFallbackNormal(collider, local) {
+  if (collider.type === "circle") {
+    const x = local.x - collider.cx;
+    const y = local.y - collider.cy;
+    const length = Math.hypot(x, y);
+    return length > 0.001 ? { x: x / length, y: y / length } : { x: 1, y: 0 };
+  }
+
+  const segmentX = collider.bx - collider.ax;
+  const segmentY = collider.by - collider.ay;
+  const segmentLength = Math.hypot(segmentX, segmentY) || 1;
+  let normalX = -segmentY / segmentLength;
+  let normalY = segmentX / segmentLength;
+  const midX = (collider.ax + collider.bx) / 2;
+  const midY = (collider.ay + collider.by) / 2;
+  const side = (local.x - midX) * normalX + (local.y - midY) * normalY;
+
+  if (side < 0) {
+    normalX *= -1;
+    normalY *= -1;
+  }
+
+  return { x: normalX, y: normalY };
 }
 
 function resolveBladeLipContactsForMineral(mineral, blade, dt, pushResponse, impulseBudget, allowBackPush) {
@@ -1100,7 +1278,11 @@ function getPlayerPushPower() {
 }
 
 function isScoopToolActive() {
-  return activeTool.behaviorType === "scoopCollect";
+  return activeTool.behaviorType === "scoopSecure";
+}
+
+function isPushOnlyToolActive() {
+  return activeTool.behaviorType === "pushOnly";
 }
 
 function getCurrentToolBoundaryConfig(blade = getCurrentBladeConfig()) {
@@ -1605,6 +1787,8 @@ function updateMinerals(dt) {
     if (scoopActive) {
       applyScoopAreaDamping(mineral, dt);
       resolveBladeLipContactsForMineral(mineral, blade, dt, passiveScoopResponse, null, false);
+    } else if (isPushOnlyToolActive()) {
+      resolvePushOnlyToolContactsForMineral(mineral, activeTool, dt);
     }
     capMineralSpeed(mineral, maxMineralSpeed);
     mineral.shake = Math.max(0, mineral.shake - dt);
@@ -2286,11 +2470,12 @@ function drawDrillToolShape(tool, surfaceOnly) {
 }
 
 function drawHammerToolShape(tool, surfaceOnly) {
-  const start = getBladeStart() + 6;
-  const headX = start + tool.length * 0.52;
+  const metrics = getHammerToolMetrics(tool);
+  const start = metrics.start;
+  const headX = metrics.headX;
   const halfWidth = tool.width / 2;
-  const headWidth = tool.length * 0.64;
-  const headHeight = tool.width * 0.46;
+  const headWidth = metrics.headWidth;
+  const headHeight = metrics.headHeight;
 
   ctx.fillStyle = surfaceOnly ? tool.fillColor : "#584d48";
   ctx.strokeStyle = surfaceOnly ? tool.fillColor : tool.strokeColor;
@@ -2316,6 +2501,16 @@ function drawHammerToolShape(tool, surfaceOnly) {
   ctx.arc(headX - headWidth / 2, -halfWidth * 0.2, 3, 0, Math.PI * 2);
   ctx.arc(headX + headWidth / 2, halfWidth * 0.2, 3, 0, Math.PI * 2);
   ctx.fill();
+}
+
+function getHammerToolMetrics(tool) {
+  const start = getBladeStart() + 6;
+  return {
+    start,
+    headX: start + tool.length * 0.52,
+    headWidth: tool.length * 0.64,
+    headHeight: tool.width * 0.46,
+  };
 }
 
 function drawToolDebugOverlay() {

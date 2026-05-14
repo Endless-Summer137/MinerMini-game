@@ -32,7 +32,7 @@ P1-B is a minimal tool-switching checkpoint on top of the playable P1-A map/came
   - current tool is shown as screen-fixed debug text on the canvas
   - switching is blocked while secured ore is still carried in the scoop
   - Scoop remains the only tool with ore collection, securing, delivery, and blade collision behavior
-  - Drill and Hammer are placeholder visuals only and do not mine, damage, spawn ore, or interact with veins
+  - Drill and Hammer use push-only solid tool-head contact against loose ore, but do not mine, damage, spawn ore, secure ore, or interact with veins
 - Load-based vehicle slowdown and shake.
 - Default scoop blade with a continuous U-shaped boundary.
 - Solid two-sided scoop lip collisions:
@@ -78,6 +78,8 @@ Important implementation points in `main.js`:
 - `activeTool` starts as Scoop and can switch with keyboard `1`, `2`, and `3` only when no secured ore is being carried.
 - `canSwitchToolsNow` blocks switching while secured ore remains in the scoop and shows the temporary debug notice `Unload before switching tools`.
 - Scoop continues to use `BLADE_TYPES.scoopBlade`; Drill and Hammer draw different placeholder tool visuals but skip scoop lip collision, scoop capture, and crusher delivery checks.
+- Drill and Hammer use `behaviorType: "pushOnly"` plus simple tool-head colliders so loose ore is displaced by contact instead of being passed over.
+- Push-only tool contact reuses moving-wall velocity response with low restitution and no attraction, so the tools behave solid without becoming magnetic or destructive.
 - `drawToolDebugOverlay` renders the current tool in screen space, outside the camera transform, so the text stays fixed while the map scrolls.
 
 Previous P1-A implementation points:
@@ -164,7 +166,8 @@ Important implementation points in `main.js`:
   - `1`, `2`, and `3` select Scoop, Drill, and Hammer
   - switching is blocked while secured ore is carried
   - switching works again after secured ore is gone
-  - Drill and Hammer do not run scoop collision/capture behavior
+  - Drill and Hammer push loose ore through push-only contact
+  - Drill and Hammer do not secure ore or run scoop capture behavior
   - debug overlay is drawn in screen space
 - P1-A VM draw/update smoke test passed.
 - `node --check main.js` for P0.5 data-table refactor.
