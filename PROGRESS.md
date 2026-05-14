@@ -4,7 +4,7 @@ Last updated: 2026-05-14
 
 ## Current Goal
 
-P1-B is a minimal tool-switching checkpoint on top of the playable P1-A map/camera prototype. The default scoop blade should still behave like a passive solid physical scoop:
+P1-C is a segmented ore vein and Drill progressive spawning checkpoint on top of the playable P1-A/P1-B prototype. The default scoop blade should still behave like a passive solid physical scoop:
 
 - not magnetic
 - not one-way
@@ -33,6 +33,13 @@ P1-B is a minimal tool-switching checkpoint on top of the playable P1-A map/came
   - switching is blocked while secured ore is still carried in the scoop
   - Scoop remains the only tool with ore collection, securing, delivery, and blade collision behavior
   - Drill and Hammer use push-only solid tool-head contact against loose ore, but do not mine, damage, spawn ore, secure ore, or interact with veins
+- P1-C segmented ore vein prototype:
+  - one default test vein has 3 segments
+  - each segment tracks integrity, assigned yield, spawned ore, visual state, and a circular hit area
+  - vein final yield is `floor(baseYield * yieldMultiplier)`, and assigned segment yields sum exactly to it
+  - Drill can progressively damage only the contacted segment when the player is pressing toward it
+  - damaged segments spawn normal loose ore over time, and spawned ore enters the existing Scoop -> crusher loop
+  - Hammer remains a push-only placeholder and does not mine veins
 - Load-based vehicle slowdown and shake.
 - Default scoop blade with a continuous U-shaped boundary.
 - Solid two-sided scoop lip collisions:
@@ -70,9 +77,20 @@ P1-B is a minimal tool-switching checkpoint on top of the playable P1-A map/came
 
 ## Latest Change
 
-Implemented P1-B minimal tool switching placeholders while preserving P1-A map/camera behavior and P0.4/P0.5 scoop/crusher feel.
+Implemented P1-C segmented ore vein Drill mining while preserving P1-A map/camera behavior and P1-B tool switching/push-only contact.
 
 Important implementation points in `main.js`:
+
+- `VEIN_DEFS.testThreeSegmentVein` defines the default 3-segment test vein, base yield, multiplier, position, segment spacing, and hit radius.
+- `createVeinFromDef` calculates `finalYield = floor(baseYield * yieldMultiplier)` and distributes `assignedYield` exactly across segments.
+- Each segment stores `integrity`, `assignedYield`, `spawnedOre`, `visualState`, `depleted`, and `hitArea`.
+- `updateVeins` only mines while active tool is Drill and `getActiveDrillAction` finds both tip overlap and input pressure toward the contacted segment.
+- Progressive spawning uses `floor(segment.assignedYield * damageProgress)` and caps against both segment yield and vein final yield.
+- Segment auto-finish only applies to the currently drilled heavy-cracked segment at `veinFinishThreshold`.
+- `drawVeins` uses simple debug shapes, cracks, state labels, and active segment highlight; no formal art was added.
+- Vein-spawned ore uses `createLooseMineral`, so it stays normal loose ore that Scoop can secure and sell.
+
+Previous P1-B implementation points:
 
 - `TOOL_TYPES` centralizes the current Scoop / Drill / Hammer data, including ids, display names, keyboard bindings, visual shape, dimensions, and placeholder behavior type.
 - `activeTool` starts as Scoop and can switch with keyboard `1`, `2`, and `3` only when no secured ore is being carried.
@@ -169,6 +187,17 @@ Important implementation points in `main.js`:
   - Drill and Hammer push loose ore through push-only contact
   - Drill and Hammer do not secure ore or run scoop capture behavior
   - debug overlay is drawn in screen space
+- P1-C segmented vein assertion script checked:
+  - default vein has 3 segments
+  - assigned segment yields sum exactly to final yield
+  - standing near the vein does not mine
+  - wrong pressure direction does not mine
+  - Drill contact plus pressure damages only the contacted segment
+  - progressive damage spawns normal loose ore without exceeding final yield
+  - one segment can deplete while untouched segments remain intact
+  - Hammer does not mine veins
+  - spawned vein ore can be secured by Scoop
+  - switching while carrying secured ore is still blocked
 - P1-A VM draw/update smoke test passed.
 - `node --check main.js` for P0.5 data-table refactor.
 - P0.5 assertion script checked:
@@ -232,11 +261,11 @@ Important implementation points in `main.js`:
 - P0.5 creates extension data tables, but there is still only one active ore, blade, chassis, skin, crusher, and upgrade.
 - Upgrade prerequisites are data-shaped, but there is no multi-upgrade graph validator yet.
 - P1-A is still a test map, not formal level design.
-- P1-B only adds tool states and placeholder visuals; drill mining, hammer burst mining, segmented veins, and corridor tests are not implemented yet.
+- P1-C only adds a minimal segmented vein model and Drill progressive ore spawning; Hammer burst mining, corridor tests, vein respawn, ore rarity, and formal ore economy are not implemented yet.
 
 ## Recommended Next Steps
 
-1. Manually playtest P1-B tool switching, especially blocked switching while carrying secured ore and post-unload switching.
+1. Manually playtest P1-C Drill pressure feel, segment readability, and spawned ore flow into Scoop/crusher.
 2. Add repeatable physics regression tests for scoop lip containment and map boundary clamps.
 3. Split `main.js` into modules before adding many P1/P2 content types.
 4. Tune scoop lip friction and restitution after more playtesting.

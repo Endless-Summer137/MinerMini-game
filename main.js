@@ -77,6 +77,11 @@ const physicsSubsteps = 3; // Scoop collision substeps per frame. Higher reduces
 const maxImpulsePerMineralPerFrame = 36; // Caps shove impulses so squeezed ore cannot launch too violently.
 const pushOnlyToolRestitution = 0.03; // Drill/Hammer ore bounce. Keep low so placeholder tools feel heavy, not springy.
 const pushOnlyToolFriction = 0.86; // Tangential damping on push-only tools. Lower grips more; higher lets ore slide more.
+const drillTipContactRadius = 8; // Contact radius for Drill mining checks. Higher makes vein contact more forgiving.
+const drillPressureThreshold = 0.42; // Required input-dot-toward-segment. Higher demands more direct pressure.
+const drillIntegrityDamagePerSecond = 0.42; // Segment damage rate while pressing Drill into a segment.
+const veinFinishThreshold = 0.08; // Heavy-cracked segments at/below this can auto-finish while actively drilled.
+const veinSpawnScatterRadius = 24; // Spawn spread around a drilled segment. Higher scatters ore farther from the vein.
 
 const wallBounceFactor = 0.22; // Mineral bounce after hitting world walls. Lower feels heavier.
 const wallContactTolerance = 3; // Distance treated as near-wall for stuck checks.
@@ -259,6 +264,22 @@ const TOOL_KEY_BINDINGS = Object.values(TOOL_TYPES).reduce((bindings, tool) => {
   return bindings;
 }, {});
 
+const VEIN_DEFS = {
+  testThreeSegmentVein: {
+    id: "testThreeSegmentVein",
+    displayName: "Test Vein",
+    segmentCount: 3,
+    baseYield: 12,
+    yieldMultiplier: 1,
+    oreType: DEFAULT_ORE_TYPE,
+    centerX: 540,
+    centerY: 360,
+    segmentSpacing: 44,
+    angle: -0.18,
+    hitRadius: 27,
+  },
+};
+
 const CRUSHER_TYPES = {
   embeddedGroundCrusher: {
     id: "embeddedGroundCrusher",
@@ -382,6 +403,7 @@ let complete = false; // Completion banner flag once collected reaches completio
 let lastTime = 0; // Previous animation timestamp for delta-time physics.
 let pushingCount = 0; // Number of loose/candidate minerals currently contacting the scoop lips.
 let currentSecuredOre = 0; // Secured load in capacity units, displayed as Scoop: current/blade capacity.
+let veins = []; // P1-C segmented ore veins. Segments spawn normal loose ore when drilled.
 let crusherBatches = []; // Background crusher jobs created after fast unload.
 let nextCrusherBatchId = 1; // Stable id so delivered ore can notify its processing batch.
 let crusherRollerSpin = 0; // Visual rotation phase for the dual crusher shafts.
@@ -389,6 +411,8 @@ let crusherLoopSoundActive = false; // Placeholder sound state to avoid repeated
 let activeTool = TOOL_TYPES.scoop; // P1-B active tool state. Only Scoop has gameplay behavior for now.
 let toolDebugNotice = ""; // Short screen-fixed debug feedback such as blocked switching.
 let toolDebugNoticeTimer = 0; // Seconds remaining before the tool debug notice disappears.
+let activeDrillTarget = null; // Current drilled segment for visual highlight; null when Drill pressure is not applied.
+let lastControlInput = { active: false, x: 0, y: -1, strength: 0 }; // Cached input for Drill pressure checks after movement.
 
 function resetGame() {
   vehicle.x = getWorldCenterX();
@@ -399,6 +423,7 @@ function resetGame() {
   vehicle.overloadShake = 0;
   vehicle.vx = 0;
   vehicle.vy = 0;
+  veins = createVeins();
   minerals = createMinerals();
   particles = [];
   crusherBatches = [];
@@ -408,6 +433,8 @@ function resetGame() {
   activeTool = TOOL_TYPES.scoop;
   toolDebugNotice = "";
   toolDebugNoticeTimer = 0;
+  activeDrillTarget = null;
+  lastControlInput = { active: false, x: vehicle.dirX, y: vehicle.dirY, strength: 0 };
   coins = 0;
   collected = 0;
   upgraded = false;
@@ -432,41 +459,17 @@ function createMinerals() {
     const oreType = DEFAULT_ORE_TYPE;
     // Each mineral keeps both physics data and P0.3 scoop-state data. The
     // secured/delivery fields stay dormant while the mineral is loose.
-    const mineral = {
-      x: random(spawnXBounds.minX, spawnXBounds.maxX),
-      y: random(crusher.y + crusher.sellRadius + 42, spawnYBounds.maxY),
-      vx: 0,
-      vy: 0,
-      radius: oreType.radius,
-      shake: 0, // Visual hit feedback timer.
-      stuckFrames: 0, // Counts slow near-wall frames before unstuck correction.
-      containedInScoop: false, // Loose-ore stability hint, not secured capacity.
-      containGrace: 0, // Hysteresis countdown after briefly leaving the scoop area.
-      state: mineralState.looseOre, // Main lifecycle: loose -> candidate -> secured -> delivered.
-      captureDwell: 0, // Seconds spent mostly inside the scoop load zone.
-      insideRatio: 0, // Last 9-point inside score, used for capture priority/debugging.
-      securedLocalX: 0, // Captured x in blade-local space so ore rides with the moving scoop.
-      securedLocalY: 0, // Captured y in blade-local space; preserves irregular pile placement.
-      securedOffsetX: 0, // Visual slosh offset from captured local x.
-      securedOffsetY: 0, // Visual slosh offset from captured local y.
-      securedVx: 0, // Local slosh velocity x for secured ore.
-      securedVy: 0, // Local slosh velocity y for secured ore.
-      securedSeed: random(0, Math.PI * 2), // Per-rock phase so render jitter is not synchronized.
-      deliveryAge: 0, // Seconds elapsed in visible unload animation.
-      deliveryDuration: 0, // Total unload animation duration for this rock.
-      deliveryStartX: 0, // World-space unload start x.
-      deliveryStartY: 0, // World-space unload start y.
-      deliveryTargetX: 0, // World-space crusher pit target x.
-      deliveryTargetY: 0, // World-space crusher pit target y.
-      crusherBatchId: 0, // Processing batch notified when this ore reaches the pit.
-      drawScale: 1, // Shrinks delivered ore as it flows into crusher.
-      type: oreType,
-    };
+    const mineral = createLooseMineral(
+      random(spawnXBounds.minX, spawnXBounds.maxX),
+      random(crusher.y + crusher.sellRadius + 42, spawnYBounds.maxY),
+      oreType
+    );
 
     const awayFromVehicle = distance(mineral.x, mineral.y, vehicle.x, vehicle.y) > 56;
     const awayFromMinerals = spawned.every((other) => distance(mineral.x, mineral.y, other.x, other.y) > mineral.radius * 2.6);
+    const awayFromVeins = isMineralAwayFromVeins(mineral);
 
-    if (awayFromVehicle && awayFromMinerals) {
+    if (awayFromVehicle && awayFromMinerals && awayFromVeins) {
       spawned.push(mineral);
     }
   }
@@ -474,11 +477,104 @@ function createMinerals() {
   return spawned;
 }
 
+function isMineralAwayFromVeins(mineral) {
+  return veins.every((vein) => {
+    return vein.segments.every((segment) => {
+      const safeDistance = segment.hitArea.radius + mineral.radius + 16;
+      return distance(mineral.x, mineral.y, segment.x, segment.y) > safeDistance;
+    });
+  });
+}
+
+function createLooseMineral(x, y, oreType = DEFAULT_ORE_TYPE) {
+  // Vein-spawned ore uses the exact same object shape as reset-spawned ore, so
+  // it naturally enters the loose -> Scoop -> crusher loop.
+  return {
+    x,
+    y,
+    vx: 0,
+    vy: 0,
+    radius: oreType.radius,
+    shake: 0, // Visual hit feedback timer.
+    stuckFrames: 0, // Counts slow near-wall frames before unstuck correction.
+    containedInScoop: false, // Loose-ore stability hint, not secured capacity.
+    containGrace: 0, // Hysteresis countdown after briefly leaving the scoop area.
+    state: mineralState.looseOre, // Main lifecycle: loose -> candidate -> secured -> delivered.
+    captureDwell: 0, // Seconds spent mostly inside the scoop load zone.
+    insideRatio: 0, // Last 9-point inside score, used for capture priority/debugging.
+    securedLocalX: 0, // Captured x in blade-local space so ore rides with the moving scoop.
+    securedLocalY: 0, // Captured y in blade-local space; preserves irregular pile placement.
+    securedOffsetX: 0, // Visual slosh offset from captured local x.
+    securedOffsetY: 0, // Visual slosh offset from captured local y.
+    securedVx: 0, // Local slosh velocity x for secured ore.
+    securedVy: 0, // Local slosh velocity y for secured ore.
+    securedSeed: random(0, Math.PI * 2), // Per-rock phase so render jitter is not synchronized.
+    deliveryAge: 0, // Seconds elapsed in visible unload animation.
+    deliveryDuration: 0, // Total unload animation duration for this rock.
+    deliveryStartX: 0, // World-space unload start x.
+    deliveryStartY: 0, // World-space unload start y.
+    deliveryTargetX: 0, // World-space crusher pit target x.
+    deliveryTargetY: 0, // World-space crusher pit target y.
+    crusherBatchId: 0, // Processing batch notified when this ore reaches the pit.
+    drawScale: 1, // Shrinks delivered ore as it flows into crusher.
+    sourceVeinId: null,
+    sourceSegmentId: null,
+    type: oreType,
+  };
+}
+
+function createVeins() {
+  return [
+    createVeinFromDef(VEIN_DEFS.testThreeSegmentVein),
+  ];
+}
+
+function createVeinFromDef(def) {
+  const finalYield = Math.floor(def.baseYield * def.yieldMultiplier);
+  const assignedYields = distributeVeinYield(finalYield, def.segmentCount);
+  const centerOffset = (def.segmentCount - 1) / 2;
+  const dirX = Math.cos(def.angle);
+  const dirY = Math.sin(def.angle);
+
+  return {
+    id: def.id,
+    displayName: def.displayName,
+    oreType: def.oreType,
+    baseYield: def.baseYield,
+    yieldMultiplier: def.yieldMultiplier,
+    finalYield,
+    segments: assignedYields.map((assignedYield, index) => {
+      const offset = (index - centerOffset) * def.segmentSpacing;
+      const x = def.centerX + dirX * offset;
+      const y = def.centerY + dirY * offset;
+      return {
+        id: `${def.id}-segment-${index + 1}`,
+        index,
+        x,
+        y,
+        integrity: 1,
+        assignedYield,
+        spawnedOre: 0,
+        visualState: "intact",
+        depleted: false,
+        hitArea: { x, y, radius: def.hitRadius },
+      };
+    }),
+  };
+}
+
+function distributeVeinYield(finalYield, segmentCount) {
+  const base = Math.floor(finalYield / segmentCount);
+  const remainder = finalYield - base * segmentCount;
+  return Array.from({ length: segmentCount }, (_, index) => base + (index < remainder ? 1 : 0));
+}
+
 function update(time) {
   const dt = Math.min((time - lastTime) / 1000, 0.033);
   lastTime = time;
 
   updateVehicle(dt);
+  updateVeins(dt);
   updateMinerals(dt);
   updateCrusherBatches(dt);
   updateParticles(dt);
@@ -575,6 +671,7 @@ function getWorldBottomY(offset) {
 
 function updateVehicle(dt) {
   const input = getControlInput();
+  lastControlInput = input;
   const movement = getVehicleMovementIntent(input);
   const scoopActive = isScoopToolActive();
 
@@ -622,6 +719,127 @@ function getVehicleMovementIntent(input) {
     isReversing,
     speedMultiplier: isReversing ? vehicle.chassis.reverseSpeedMultiplier : 1,
   };
+}
+
+function updateVeins(dt) {
+  activeDrillTarget = null;
+  if (!isDrillToolActive()) return;
+
+  const drillAction = getActiveDrillAction(lastControlInput);
+  if (!drillAction) return;
+
+  const { vein, segment } = drillAction;
+  activeDrillTarget = { veinId: vein.id, segmentId: segment.id };
+  segment.integrity = clamp(segment.integrity - drillIntegrityDamagePerSecond * lastControlInput.strength * dt, 0, 1);
+  updateVeinSegmentVisualState(segment);
+  spawnProgressiveVeinOre(vein, segment);
+
+  if (canAutoFinishVeinSegment(segment)) {
+    finishVeinSegment(vein, segment);
+  }
+}
+
+function getActiveDrillAction(input) {
+  if (!input.active || input.strength <= 0 || !isDrillToolActive()) return null;
+
+  const drillTip = getDrillTipWorldPosition();
+  let bestAction = null;
+
+  for (const vein of veins) {
+    for (const segment of vein.segments) {
+      if (segment.depleted) continue;
+      const dx = segment.hitArea.x - drillTip.x;
+      const dy = segment.hitArea.y - drillTip.y;
+      const distanceToSegment = Math.hypot(dx, dy);
+      const overlaps = distanceToSegment <= segment.hitArea.radius + drillTip.radius;
+      if (!overlaps) continue;
+
+      const directionToSegment = distanceToSegment > 0.001
+        ? { x: dx / distanceToSegment, y: dy / distanceToSegment }
+        : { x: vehicle.dirX, y: vehicle.dirY };
+      const pressureDot = input.x * directionToSegment.x + input.y * directionToSegment.y;
+      if (pressureDot < drillPressureThreshold) continue;
+
+      const score = pressureDot * 1000 - distanceToSegment;
+      if (!bestAction || score > bestAction.score) {
+        bestAction = { vein, segment, drillTip, pressureDot, score };
+      }
+    }
+  }
+
+  return bestAction;
+}
+
+function spawnProgressiveVeinOre(vein, segment) {
+  const damageProgress = 1 - segment.integrity;
+  const targetSpawned = Math.floor(segment.assignedYield * damageProgress);
+  const newOreToSpawn = targetSpawned - segment.spawnedOre;
+  if (newOreToSpawn > 0) spawnVeinOre(vein, segment, newOreToSpawn);
+}
+
+function canAutoFinishVeinSegment(segment) {
+  return segment.integrity <= veinFinishThreshold && segment.visualState === "heavy_cracked";
+}
+
+function finishVeinSegment(vein, segment) {
+  spawnVeinOre(vein, segment, segment.assignedYield - segment.spawnedOre);
+  segment.integrity = 0;
+  segment.depleted = true;
+  updateVeinSegmentVisualState(segment);
+}
+
+function spawnVeinOre(vein, segment, requestedCount) {
+  const segmentRemaining = Math.max(0, segment.assignedYield - segment.spawnedOre);
+  const veinRemaining = Math.max(0, vein.finalYield - getVeinSpawnedOre(vein));
+  const spawnCount = Math.min(requestedCount, segmentRemaining, veinRemaining);
+  if (spawnCount <= 0) return 0;
+
+  for (let i = 0; i < spawnCount; i += 1) {
+    const oreType = vein.oreType;
+    const position = getVeinOreSpawnPosition(segment, oreType.radius);
+    const mineral = createLooseMineral(position.x, position.y, oreType);
+    mineral.sourceVeinId = vein.id;
+    mineral.sourceSegmentId = segment.id;
+    mineral.shake = 0.18;
+    mineral.vx = position.outwardX * random(12, 30) + random(-8, 8);
+    mineral.vy = position.outwardY * random(12, 30) + random(-8, 8);
+    minerals.push(mineral);
+  }
+
+  segment.spawnedOre += spawnCount;
+  updateVeinSegmentVisualState(segment);
+  return spawnCount;
+}
+
+function getVeinOreSpawnPosition(segment, mineralRadius) {
+  const angle = random(0, Math.PI * 2);
+  const distanceFromCenter = segment.hitArea.radius + mineralRadius + random(2, veinSpawnScatterRadius);
+  const outwardX = Math.cos(angle);
+  const outwardY = Math.sin(angle);
+  const bounds = getPlayableBounds(mineralRadius);
+
+  return {
+    x: clamp(segment.x + outwardX * distanceFromCenter, bounds.minX, bounds.maxX),
+    y: clamp(segment.y + outwardY * distanceFromCenter, bounds.minY, bounds.maxY),
+    outwardX,
+    outwardY,
+  };
+}
+
+function getVeinSpawnedOre(vein) {
+  return vein.segments.reduce((total, segment) => total + segment.spawnedOre, 0);
+}
+
+function updateVeinSegmentVisualState(segment) {
+  if (segment.depleted || segment.spawnedOre >= segment.assignedYield) {
+    segment.visualState = "depleted";
+  } else if (segment.integrity <= 0.34) {
+    segment.visualState = "heavy_cracked";
+  } else if (segment.integrity <= 0.67) {
+    segment.visualState = "cracked";
+  } else {
+    segment.visualState = "intact";
+  }
 }
 
 function getControlInput() {
@@ -1281,8 +1499,18 @@ function isScoopToolActive() {
   return activeTool.behaviorType === "scoopSecure";
 }
 
+function isDrillToolActive() {
+  return activeTool.id === "drill";
+}
+
 function isPushOnlyToolActive() {
   return activeTool.behaviorType === "pushOnly";
+}
+
+function getDrillTipWorldPosition() {
+  const localX = getBladeStart() + activeTool.length;
+  const tip = bladeLocalToWorld(localX, 0);
+  return { x: tip.x, y: tip.y, radius: drillTipContactRadius };
 }
 
 function getCurrentToolBoundaryConfig(blade = getCurrentBladeConfig()) {
@@ -2219,6 +2447,7 @@ function draw() {
   ctx.save();
   applyCameraTransform();
   drawGround();
+  drawVeins();
   drawCrusher();
   drawBladeSurface();
   for (const mineral of minerals) drawMineral(mineral);
@@ -2259,6 +2488,104 @@ function drawGround() {
     ctx.lineTo(playableBounds.maxX, y);
     ctx.stroke();
   }
+}
+
+function drawVeins() {
+  for (const vein of veins) {
+    ctx.save();
+    ctx.strokeStyle = "rgba(120, 102, 77, 0.45)";
+    ctx.lineWidth = 10;
+    ctx.lineCap = "round";
+    ctx.beginPath();
+    vein.segments.forEach((segment, index) => {
+      if (index === 0) {
+        ctx.moveTo(segment.x, segment.y);
+      } else {
+        ctx.lineTo(segment.x, segment.y);
+      }
+    });
+    ctx.stroke();
+    ctx.restore();
+
+    for (const segment of vein.segments) {
+      drawVeinSegment(vein, segment);
+    }
+  }
+}
+
+function drawVeinSegment(vein, segment) {
+  const active = isActiveDrillSegment(vein, segment);
+  const color = getVeinSegmentColor(segment.visualState);
+  const radius = segment.hitArea.radius;
+
+  ctx.save();
+  ctx.translate(segment.x, segment.y);
+
+  ctx.fillStyle = color.fill;
+  ctx.strokeStyle = active ? "#f0c46b" : color.stroke;
+  ctx.lineWidth = active ? 4 : 2;
+  ctx.beginPath();
+  ctx.arc(0, 0, radius, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.stroke();
+
+  drawVeinCracks(segment, radius, active);
+
+  ctx.fillStyle = segment.visualState === "depleted" ? "rgba(244, 240, 223, 0.45)" : "#f4f0df";
+  ctx.font = "700 10px Arial";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(getVeinSegmentLabel(segment), 0, 2);
+
+  if (active) {
+    ctx.strokeStyle = "rgba(240, 196, 107, 0.5)";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(0, 0, radius + 7 + Math.sin(performance.now() * 0.018) * 2, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+
+  ctx.restore();
+}
+
+function drawVeinCracks(segment, radius, active) {
+  if (segment.visualState === "intact") return;
+
+  const crackCount = segment.visualState === "heavy_cracked" ? 4 : 2;
+  ctx.strokeStyle = active ? "rgba(255, 232, 150, 0.85)" : "rgba(24, 32, 35, 0.62)";
+  ctx.lineWidth = segment.visualState === "heavy_cracked" ? 2 : 1.4;
+
+  for (let i = 0; i < crackCount; i += 1) {
+    const angle = -0.8 + i * 0.55;
+    ctx.beginPath();
+    ctx.moveTo(Math.cos(angle) * radius * 0.16, Math.sin(angle) * radius * 0.16);
+    ctx.lineTo(Math.cos(angle + 0.4) * radius * 0.52, Math.sin(angle + 0.4) * radius * 0.52);
+    ctx.lineTo(Math.cos(angle - 0.18) * radius * 0.76, Math.sin(angle - 0.18) * radius * 0.76);
+    ctx.stroke();
+  }
+}
+
+function getVeinSegmentColor(visualState) {
+  if (visualState === "depleted") {
+    return { fill: "#303332", stroke: "#4d5652" };
+  }
+  if (visualState === "heavy_cracked") {
+    return { fill: "#5f513e", stroke: "#b28352" };
+  }
+  if (visualState === "cracked") {
+    return { fill: "#6f664f", stroke: "#a89569" };
+  }
+  return { fill: "#6d745d", stroke: "#9baa7c" };
+}
+
+function getVeinSegmentLabel(segment) {
+  if (segment.visualState === "heavy_cracked") return "heavy";
+  if (segment.visualState === "depleted") return "done";
+  return segment.visualState;
+}
+
+function isActiveDrillSegment(vein, segment) {
+  return activeDrillTarget && activeDrillTarget.veinId === vein.id && activeDrillTarget.segmentId === segment.id;
 }
 
 function drawCrusher() {
