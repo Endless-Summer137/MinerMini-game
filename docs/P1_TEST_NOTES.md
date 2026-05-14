@@ -6,6 +6,7 @@ Scope:
 
 - larger test map
 - camera follows vehicle
+- camera zoom configuration reserved for future mobile/performance tuning
 - map boundaries
 - screen-fixed UI
 
@@ -23,6 +24,7 @@ Manual checklist:
 - Vehicle can drive across the larger map without camera jitter.
 - Camera follows the vehicle smoothly but does not feel floaty.
 - Camera clamps at all map edges.
+- Changing `CAMERA_CONFIG.zoom` locally should change how much world is visible without moving UI.
 - Top HUD, controls, message, joystick, and completion banner stay screen-fixed.
 - Crusher remains in world space and still unloads secured ore.
 - Minerals remain stable in world space while camera moves.
@@ -37,13 +39,15 @@ Validation notes:
 
 - `node --check main.js` passed for P1-A.
 - VM assertion script passed for camera clamp, viewport/world size split, boundary clamps, reverse movement, push upgrade, and screen-space coin payout.
+- Camera zoom supplement assertion passed for default zoom, min/max clamping, zoomed camera bounds, and world-to-screen conversion.
 - VM draw/update smoke test passed.
 - Local static server returned 200 for `index.html`.
-- Served `main.js` included `camera`, `viewport`, `mapWidth`, and `mapHeight`.
+- Served `main.js` included `CAMERA_CONFIG`, `camera`, `viewport`, `mapWidth`, and `mapHeight`.
 
 Still needs hands-on playtest in the browser:
 
 - actual camera feel while dragging around the full map
+- whether `CAMERA_CONFIG.zoom` values such as `0.85` and `1.25` are useful on real phone screens
 - whether the larger map feels sufficiently populated
 - whether edge/corner behavior feels acceptable during real mineral pushing
 - whether crusher selling still feels readable after driving away

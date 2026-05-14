@@ -19,6 +19,13 @@ const reverseSpeedMultiplier = 0.72; // Reverse movement speed. Higher backs up 
 const mapWidth = 720; // P1-A test-map width in world pixels. Larger than the 360px viewport.
 const mapHeight = 1080; // P1-A test-map height in world pixels. Large enough for camera-follow testing.
 const cameraFollowSmoothingTime = 0.08; // Lower follows tighter; higher feels floatier. Keep low for responsive P1-A control.
+const CAMERA_CONFIG = {
+  zoom: 1.0, // Larger zoom is closer with fewer world objects visible; smaller zoom shows more map.
+  minZoom: 0.85, // Future mobile/performance lower bound for wider, cheaper views.
+  maxZoom: 1.25, // Future readability upper bound for small screens.
+  followSmoothing: cameraFollowSmoothingTime,
+  clampToMapBounds: true,
+};
 
 const bladeWidth = 52; // Inner scoop span between side lips. Higher catches wider piles.
 const bladeLength = 38; // Back-to-front scoop depth. Higher gives more room before ore reaches the mouth.
@@ -266,6 +273,7 @@ const world = {
 const camera = {
   x: 0,
   y: 0,
+  zoom: CAMERA_CONFIG.zoom,
 };
 
 // The crusher sits off the main vertical traffic path so selling is deliberate
@@ -416,6 +424,7 @@ function update(time) {
 }
 
 function resetCameraToVehicle() {
+  camera.zoom = getConfiguredCameraZoom();
   const target = getCameraTarget();
   camera.x = target.x;
   camera.y = target.y;
@@ -423,8 +432,9 @@ function resetCameraToVehicle() {
 }
 
 function updateCamera(dt) {
+  camera.zoom = getConfiguredCameraZoom();
   const target = getCameraTarget();
-  const alpha = 1 - Math.exp(-dt / cameraFollowSmoothingTime);
+  const alpha = 1 - Math.exp(-dt / CAMERA_CONFIG.followSmoothing);
   camera.x += (target.x - camera.x) * alpha;
   camera.y += (target.y - camera.y) * alpha;
   clampCamera();
@@ -432,22 +442,39 @@ function updateCamera(dt) {
 
 function getCameraTarget() {
   return {
-    x: vehicle.x - viewport.width / 2,
-    y: vehicle.y - viewport.height / 2,
+    x: vehicle.x - getCameraViewWidth() / 2,
+    y: vehicle.y - getCameraViewHeight() / 2,
   };
 }
 
 function clampCamera() {
-  camera.x = clamp(camera.x, 0, Math.max(0, world.width - viewport.width));
-  camera.y = clamp(camera.y, 0, Math.max(0, world.height - viewport.height));
+  if (!CAMERA_CONFIG.clampToMapBounds) return;
+  camera.x = clamp(camera.x, 0, Math.max(0, world.width - getCameraViewWidth()));
+  camera.y = clamp(camera.y, 0, Math.max(0, world.height - getCameraViewHeight()));
 }
 
 function applyCameraTransform() {
+  ctx.scale(camera.zoom, camera.zoom);
   ctx.translate(-camera.x, -camera.y);
 }
 
 function worldToScreen(x, y) {
-  return { x: x - camera.x, y: y - camera.y };
+  return {
+    x: (x - camera.x) * camera.zoom,
+    y: (y - camera.y) * camera.zoom,
+  };
+}
+
+function getConfiguredCameraZoom() {
+  return clamp(CAMERA_CONFIG.zoom, CAMERA_CONFIG.minZoom, CAMERA_CONFIG.maxZoom);
+}
+
+function getCameraViewWidth() {
+  return viewport.width / camera.zoom;
+}
+
+function getCameraViewHeight() {
+  return viewport.height / camera.zoom;
 }
 
 function updateVehicle(dt) {

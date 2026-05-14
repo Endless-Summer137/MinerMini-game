@@ -21,6 +21,7 @@ P1-A is a larger-map and camera-follow checkpoint on top of the playable P0.5 mi
 - P1-A larger test map:
   - canvas stays a fixed 360 x 640 viewport
   - world map is 720 x 1080 world pixels
+  - `CAMERA_CONFIG` reserves zoom, min/max zoom, follow smoothing, and map clamp settings
   - camera follows the vehicle with slight smoothing and clamps to map boundaries
   - UI, joystick, completion banner, and coin-to-HUD particles remain screen-fixed
   - crusher, minerals, vehicle, scoop, world particles, and map boundaries remain in world coordinates
@@ -66,7 +67,8 @@ Implemented P1-A larger test map, camera follow, and map boundaries while preser
 Important implementation points in `main.js`:
 
 - `viewport` now represents the canvas screen size, while `world` represents the larger playable map.
-- `camera` follows the vehicle with `cameraFollowSmoothingTime` and clamps inside the map.
+- `CAMERA_CONFIG` centralizes camera zoom, min/max zoom, follow smoothing, and boundary clamp behavior for future mobile/performance tuning.
+- `camera` follows the vehicle with configurable smoothing and clamps inside the map using the current zoomed view size.
 - `draw` applies the camera transform only around world-space rendering.
 - `drawParticles("world")` and `drawParticles("screen")` keep ore dust in world space while coin payout particles can fly to fixed HUD space.
 - Vehicle and mineral wall clamps now use the larger map boundaries without changing the scoop collision model.
@@ -131,10 +133,15 @@ Important implementation points in `main.js`:
 - `node --check main.js` for P1-A camera/map changes.
 - P1-A assertion script checked:
   - viewport remains 360 x 640 while world is 720 x 1080
-  - camera clamps at map edges
+  - camera clamps at map edges using current zoomed view size
   - vehicle+scoop and minerals clamp inside the larger map
   - reverse movement and push upgrade still work
   - coin payout particles can use screen-space flight toward the HUD
+- P1-A camera zoom supplement checked:
+  - default zoom is 1.0, preserving current view scale
+  - zoom is clamped between configured min/max values
+  - world-to-screen conversion respects camera zoom
+  - UI and screen-space coin payout remain outside the camera transform
 - P1-A VM draw/update smoke test passed.
 - `node --check main.js` for P0.5 data-table refactor.
 - P0.5 assertion script checked:
@@ -151,7 +158,7 @@ Important implementation points in `main.js`:
   - served `main.js` still has no old `const collector` object
 - Local static server check for P1-A:
   - `http://127.0.0.1:8000/index.html` returned 200
-  - served `main.js` includes `camera`, `viewport`, `mapWidth`, and `mapHeight`
+  - served `main.js` includes `CAMERA_CONFIG`, `camera`, `viewport`, `mapWidth`, and `mapHeight`
 - `node --check main.js` for P0.4 crusher sell-point changes.
 - P0.4 tuning assertion script checked:
   - empty load gives no unload duration
