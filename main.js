@@ -107,6 +107,126 @@ const securedOreRandomOffset = 2.4; // Capture-time random offset so secured roc
 const securedOreLocalDamping = 0.82; // Damps secured slosh velocity. Lower settles faster; higher feels looser.
 const securedOreMaxVisualOffset = 5.5; // Max secured visual slosh from captured position.
 const securedOreJitterAmount = 0.65; // Render-only micro jitter to keep the pile organic.
+
+// P0.5 data tables keep the current single playable option, but make the
+// future extension seams explicit before P1 adds more content.
+const ORE_TYPES = {
+  basicOre: {
+    id: "basicOre",
+    displayName: "Basic Ore",
+    radius: 7,
+    mass: 1,
+    pushResistance: 1,
+    requiredPush,
+    saturationPush,
+    maxPushSpeed,
+    scoopFriction: scoopFrictionInside,
+    capacityCost: 1,
+    baseCoins: 1,
+    baseSpecialCurrency: 0,
+    color: "#c9b26b",
+    strokeColor: "#7e6a38",
+    highlightColor: "rgba(255, 255, 255, 0.28)",
+    particleColor: "#c9b26b",
+    dustColor: "#b8954f",
+    tags: [],
+  },
+};
+
+const DEFAULT_ORE_TYPE = ORE_TYPES.basicOre;
+
+const VEHICLE_CHASSIS = {
+  prototypeHauler: {
+    id: "prototypeHauler",
+    displayName: "Prototype Hauler",
+    speed: vehicleSpeed,
+    radius: 15,
+    bodyRadius: 12,
+    reverseDotThreshold,
+    reverseSpeedMultiplier,
+  },
+};
+
+const VEHICLE_SKINS = {
+  orangePrototype: {
+    id: "orangePrototype",
+    displayName: "Orange Prototype",
+    bodyFill: "#cf6a3c",
+    bodyStroke: "#52291e",
+    cabinFill: "#35464a",
+    treadFill: "#243136",
+  },
+};
+
+const BLADE_TYPES = {
+  // Default blade is a passive solid scoop: no magnetism, no one-way lips, no
+  // hidden storage behavior. Future blade variants should live beside this
+  // data object instead of being folded into vehicle movement.
+  scoopBlade: {
+    id: "scoopBlade",
+    displayName: "Default Scoop Blade",
+    shape: "uScoop",
+    width: bladeWidth,
+    length: bladeLength,
+    capacity: maxScoopCapacity,
+    lipThickness: bladeLipThickness,
+    captureRules: {
+      insideThreshold: captureInsideThreshold,
+      dwellTime: captureDwellTime,
+      resetThreshold: captureCandidateResetThreshold,
+    },
+    lipCollision: {
+      innerBackLipThickness,
+      innerBackLipFriction,
+      innerBackLipPushForce,
+      sideLipThickness,
+      sideLipRestitution,
+      sideLipFriction,
+    },
+    specialAssist: {
+      centerPullForce,
+      scoopMagnetForce,
+      sideLipInwardForce,
+      sideInwardAttractionForce,
+      maxAssistDisplacementPerFrame,
+    },
+    allowedOreTags: [],
+    surfaceAlpha: bladeSurfaceAlpha,
+  },
+};
+
+const CRUSHER_TYPES = {
+  embeddedGroundCrusher: {
+    id: "embeddedGroundCrusher",
+    displayName: "Embedded Ground Crusher",
+    coinMultiplier: 1,
+    specialCurrencyMultiplier: 1,
+    oreMultipliers: {
+      default: { coinMultiplier: 1, specialCurrencyMultiplier: 1 },
+    },
+  },
+};
+
+const UPGRADE_DEFS = {
+  pushPower: {
+    id: "pushPower",
+    displayName: "Push Power Upgrade",
+    cost: upgradeCost,
+    effects: {
+      pushForceMultiplier: upgradedPushForceMultiplier,
+      bladeWidthBonus: upgradedBladeWidthBonus,
+      bladeCapacityBonus: 0,
+      crusherSpeedMultiplier: 1,
+      rewardMultiplier: 1,
+    },
+  },
+};
+
+const activeVehicleChassis = VEHICLE_CHASSIS.prototypeHauler;
+const activeVehicleSkin = VEHICLE_SKINS.orangePrototype;
+const activeBladeType = BLADE_TYPES.scoopBlade;
+const activeCrusherType = CRUSHER_TYPES.embeddedGroundCrusher;
+const activeUpgradeDef = UPGRADE_DEFS.pushPower;
 const canvas = document.getElementById("gameCanvas");
 const ctx = canvas.getContext("2d");
 const coinsEl = document.getElementById("coins");
@@ -128,6 +248,7 @@ const world = {
 // The crusher sits off the main vertical traffic path so selling is deliberate
 // but still reachable as a quick side unload bay.
 const crusher = {
+  type: activeCrusherType,
   x: world.wall + 66,
   y: 108,
   sellRadius: crusherSellRadius,
@@ -140,44 +261,16 @@ const crusher = {
 const vehicle = {
   x: world.width / 2,
   y: world.height - 78,
-  radius: 15,
-  bodyRadius: 12,
+  chassis: activeVehicleChassis,
+  skin: activeVehicleSkin,
+  radius: activeVehicleChassis.radius,
+  bodyRadius: activeVehicleChassis.bodyRadius,
   dirX: 0,
   dirY: -1,
   isReversing: false,
   overloadShake: 0,
   vx: 0,
   vy: 0,
-};
-
-const bladeTypes = {
-  // Default blade is a passive solid scoop: no magnetism, no one-way lips, no
-  // hidden storage behavior. These fields copy the tuning constants above.
-  scoopBlade: {
-    key: "scoopBlade",
-    width: bladeWidth,
-    length: bladeLength,
-    lipThickness: bladeLipThickness,
-    innerBackLipThickness,
-    innerBackLipFriction,
-    sideLipThickness,
-    sideLipRestitution,
-    sideLipFriction,
-    surfaceAlpha: bladeSurfaceAlpha,
-    innerBackLipPushForce,
-    sideLipInwardForce,
-  },
-  // Future P0 hooks: magneticBlade, pushBlade, drillHead.
-};
-
-const activeBladeType = bladeTypes.scoopBlade;
-
-// Mineral type describes how loose physical ore reacts to pushing. For P0 there
-// is one type, but keeping it grouped makes future ore variants easier to tune.
-const mineralType = {
-  requiredPush,
-  saturationPush,
-  maxPushSpeed,
 };
 
 // Pointer control stores the drag gesture used as a virtual joystick.
@@ -200,7 +293,7 @@ let upgraded = false; // One-shot P0 upgrade flag for push power and blade width
 let complete = false; // Completion banner flag once collected reaches completionTarget.
 let lastTime = 0; // Previous animation timestamp for delta-time physics.
 let pushingCount = 0; // Number of loose/candidate minerals currently contacting the scoop lips.
-let currentSecuredOre = 0; // Current secured scoop load, displayed as Scoop: current/maxScoopCapacity.
+let currentSecuredOre = 0; // Secured load in capacity units, displayed as Scoop: current/blade capacity.
 let crusherBatches = []; // Background crusher jobs created after fast unload.
 let nextCrusherBatchId = 1; // Stable id so delivered ore can notify its processing batch.
 let crusherRollerSpin = 0; // Visual rotation phase for the dual crusher shafts.
@@ -239,6 +332,7 @@ function createMinerals() {
 
   while (spawned.length < mineralCount && attempts < mineralCount * 80) {
     attempts += 1;
+    const oreType = DEFAULT_ORE_TYPE;
     // Each mineral keeps both physics data and P0.3 scoop-state data. The
     // secured/delivery fields stay dormant while the mineral is loose.
     const mineral = {
@@ -246,7 +340,7 @@ function createMinerals() {
       y: random(crusher.y + crusher.sellRadius + 42, world.height - world.wall - 44),
       vx: 0,
       vy: 0,
-      radius: 7,
+      radius: oreType.radius,
       shake: 0, // Visual hit feedback timer.
       stuckFrames: 0, // Counts slow near-wall frames before unstuck correction.
       containedInScoop: false, // Loose-ore stability hint, not secured capacity.
@@ -269,7 +363,7 @@ function createMinerals() {
       deliveryTargetY: 0, // World-space crusher pit target y.
       crusherBatchId: 0, // Processing batch notified when this ore reaches the pit.
       drawScale: 1, // Shrinks delivered ore as it flows into crusher.
-      type: mineralType,
+      type: oreType,
     };
 
     const awayFromVehicle = distance(mineral.x, mineral.y, vehicle.x, vehicle.y) > 56;
@@ -313,8 +407,8 @@ function updateVehicle(dt) {
   const previousX = vehicle.x;
   const previousY = vehicle.y;
   const speedMultiplier = movement.speedMultiplier * overload.speedMultiplier;
-  vehicle.x += movement.x * vehicleSpeed * input.strength * speedMultiplier * dt;
-  vehicle.y += movement.y * vehicleSpeed * input.strength * speedMultiplier * dt;
+  vehicle.x += movement.x * vehicle.chassis.speed * input.strength * speedMultiplier * dt;
+  vehicle.y += movement.y * vehicle.chassis.speed * input.strength * speedMultiplier * dt;
   clampVehicleAndBladeToWalls(blade);
   vehicle.vx = (vehicle.x - previousX) / Math.max(dt, 0.001);
   vehicle.vy = (vehicle.y - previousY) / Math.max(dt, 0.001);
@@ -330,7 +424,7 @@ function getVehicleMovementIntent(input) {
   }
 
   const dot = input.x * vehicle.dirX + input.y * vehicle.dirY;
-  const isReversing = dot < reverseDotThreshold;
+  const isReversing = dot < vehicle.chassis.reverseDotThreshold;
 
   // Movement follows the player's input, while facing/blade direction only
   // updates outside strong reverse input. This lets the player back out without
@@ -339,7 +433,7 @@ function getVehicleMovementIntent(input) {
     x: input.x,
     y: input.y,
     isReversing,
-    speedMultiplier: isReversing ? reverseSpeedMultiplier : 1,
+    speedMultiplier: isReversing ? vehicle.chassis.reverseSpeedMultiplier : 1,
   };
 }
 
@@ -452,8 +546,18 @@ function isPhysicalOre(mineral) {
   return mineral.state === mineralState.looseOre || mineral.state === mineralState.captureCandidate;
 }
 
+function getMineralOreType(mineral) {
+  return mineral.type || DEFAULT_ORE_TYPE;
+}
+
+function getMineralCapacityCost(mineral) {
+  return getMineralOreType(mineral).capacityCost || 1;
+}
+
 function syncScoopLoadCount() {
-  currentSecuredOre = minerals.reduce((count, mineral) => count + (mineral.state === mineralState.securedOre ? 1 : 0), 0);
+  currentSecuredOre = minerals.reduce((count, mineral) => {
+    return count + (mineral.state === mineralState.securedOre ? getMineralCapacityCost(mineral) : 0);
+  }, 0);
 }
 
 function updateContainedState(mineral, blade) {
@@ -493,7 +597,6 @@ function getScoopLocalState(mineral, blade) {
 
 function applyBladeLipCollisions(dt, blade = getCurrentBladeConfig(), allowBackPush = true) {
   const playerPushPower = getPlayerPushPower();
-  const pushResponse = getSaturatedPushResponse(playerPushPower, mineralType);
   const impulseBudget = new Map();
   let loadCount = 0;
   const subDt = dt / physicsSubsteps;
@@ -503,6 +606,7 @@ function applyBladeLipCollisions(dt, blade = getCurrentBladeConfig(), allowBackP
   for (let step = 0; step < physicsSubsteps; step += 1) {
     for (const mineral of minerals) {
       if (!isPhysicalOre(mineral)) continue;
+      const pushResponse = getSaturatedPushResponse(playerPushPower, getMineralOreType(mineral));
       const result = resolveBladeLipContactsForMineral(mineral, blade, subDt, pushResponse, impulseBudget, allowBackPush);
       if (step === 0 && result.inLoadZone) loadCount += 1;
       capMineralSpeed(mineral, allowBackPush ? pushResponse.speedCap : maxMineralSpeed);
@@ -795,12 +899,14 @@ function capVector(x, y, maxLength) {
   return { x: x * scale, y: y * scale };
 }
 function getSaturatedPushResponse(playerPushPower, type) {
-  if (playerPushPower < type.requiredPush) {
+  const pushResistance = type.pushResistance || 1;
+  const effectivePushPower = playerPushPower / pushResistance;
+  if (effectivePushPower < type.requiredPush) {
     return { accelScale: 0, speedCap: 0 };
   }
 
   const range = Math.max(type.saturationPush - type.requiredPush, 0.001);
-  const normalized = clamp((playerPushPower - type.requiredPush) / range, 0, 1);
+  const normalized = clamp((effectivePushPower - type.requiredPush) / range, 0, 1);
   const curve = 1 - Math.pow(1 - normalized, 2.4);
   const speedCap = type.maxPushSpeed * (0.35 + curve * 0.65);
 
@@ -811,14 +917,33 @@ function getSaturatedPushResponse(playerPushPower, type) {
 }
 
 function getPlayerPushPower() {
-  return upgraded ? pushForce * upgradedPushForceMultiplier : pushForce;
+  return pushForce * getUpgradeEffect("pushForceMultiplier", 1);
 }
 
 function getCurrentBladeConfig() {
+  const lipCollision = activeBladeType.lipCollision;
+  const assist = activeBladeType.specialAssist;
   return {
     ...activeBladeType,
-    width: activeBladeType.width + (upgraded ? upgradedBladeWidthBonus : 0),
+    width: activeBladeType.width + getUpgradeEffect("bladeWidthBonus", 0),
+    capacity: activeBladeType.capacity + getUpgradeEffect("bladeCapacityBonus", 0),
+    innerBackLipThickness: lipCollision.innerBackLipThickness,
+    innerBackLipFriction: lipCollision.innerBackLipFriction,
+    innerBackLipPushForce: lipCollision.innerBackLipPushForce,
+    sideLipThickness: lipCollision.sideLipThickness,
+    sideLipRestitution: lipCollision.sideLipRestitution,
+    sideLipFriction: lipCollision.sideLipFriction,
+    sideLipInwardForce: assist.sideLipInwardForce,
   };
+}
+
+function getCurrentBladeCapacity() {
+  return getCurrentBladeConfig().capacity;
+}
+
+function getUpgradeEffect(effectName, fallback) {
+  if (!upgraded) return fallback;
+  return activeUpgradeDef.effects[effectName] ?? fallback;
 }
 
 function capMineralSpeed(mineral, speedCap) {
@@ -880,7 +1005,8 @@ function updateDeliveredOre(mineral, index, dt) {
 
 function updateScoopCaptureCandidates(blade, dt) {
   const candidates = [];
-  const capacityLeft = maxScoopCapacity - currentSecuredOre;
+  const captureRules = blade.captureRules;
+  const capacityLeft = blade.capacity - currentSecuredOre;
 
   for (const mineral of minerals) {
     if (!isPhysicalOre(mineral)) continue;
@@ -890,17 +1016,17 @@ function updateScoopCaptureCandidates(blade, dt) {
 
     // Full scoop means no new secured ore. The mineral remains physical and can
     // still be pushed around by the blade.
-    if (capacityLeft <= 0 || score.insideRatio < captureCandidateResetThreshold) {
+    if (capacityLeft <= 0 || score.insideRatio < captureRules.resetThreshold) {
       mineral.state = mineralState.looseOre;
       mineral.captureDwell = 0;
       continue;
     }
 
-    if (score.insideRatio >= captureInsideThreshold) {
+    if (score.insideRatio >= captureRules.insideThreshold) {
       mineral.state = mineralState.captureCandidate;
       mineral.captureDwell += dt;
 
-      if (mineral.captureDwell >= captureDwellTime) {
+      if (mineral.captureDwell >= captureRules.dwellTime) {
         candidates.push(mineral);
       }
     } else {
@@ -919,14 +1045,15 @@ function updateScoopCaptureCandidates(blade, dt) {
 
   let slots = capacityLeft;
   for (const mineral of candidates) {
-    if (slots <= 0) {
+    const capacityCost = getMineralCapacityCost(mineral);
+    if (slots < capacityCost) {
       mineral.state = mineralState.looseOre;
       mineral.captureDwell = 0;
       continue;
     }
 
     secureMineral(mineral, blade);
-    slots -= 1;
+    slots -= capacityCost;
   }
 }
 
@@ -1000,7 +1127,7 @@ function secureMineral(mineral, blade) {
   mineral.vy = vehicle.vy;
   mineral.containedInScoop = true;
   mineral.containGrace = containedStateHysteresis;
-  currentSecuredOre += 1;
+  currentSecuredOre += getMineralCapacityCost(mineral);
 }
 
 function clampSecuredOreLocalPosition(localX, localY, radius, blade) {
@@ -1033,7 +1160,7 @@ function tryStartSecuredOreDelivery() {
   const securedOre = minerals.filter((mineral) => mineral.state === mineralState.securedOre);
   if (securedOre.length === 0) return;
 
-  const batch = createCrusherBatch(securedOre.length, load.loadRatio);
+  const batch = createCrusherBatch(securedOre, load.loadRatio);
   securedOre.forEach((mineral, index) => startSecuredOreDelivery(mineral, batch, index, securedOre.length));
   syncScoopLoadCount();
   messageEl.textContent = `Unloading ${batch.amount} ore.`;
@@ -1042,22 +1169,63 @@ function tryStartSecuredOreDelivery() {
 
 function getCurrentCrusherLoad() {
   const currentLoad = currentSecuredOre;
-  const maxLoad = maxScoopCapacity;
+  const maxLoad = getCurrentBladeCapacity();
   const loadRatio = maxLoad > 0 ? clamp(currentLoad / maxLoad, 0, 1) : 0;
   return { currentLoad, maxLoad, loadRatio };
 }
 
-function createCrusherBatch(amount, loadRatio) {
+function createCrusherBatch(oreList, loadRatio) {
+  const amount = oreList.length;
+  const payout = calculateCrusherPayout(oreList, crusher.type);
   return {
     id: nextCrusherBatchId,
     amount,
+    capacityLoad: oreList.reduce((total, mineral) => total + getMineralCapacityCost(mineral), 0),
     loadRatio,
+    oreCounts: countOreTypes(oreList),
+    payout,
+    particleColor: getBatchParticleColor(oreList),
     unloadingRemaining: amount,
     unloadDuration: getCrusherUnloadDuration(loadRatio),
     processingAge: 0,
     processingDuration: getCrusherProcessingDuration(amount),
     phase: "unloading",
   };
+}
+
+function countOreTypes(oreList) {
+  return oreList.reduce((counts, mineral) => {
+    const oreType = getMineralOreType(mineral);
+    counts[oreType.id] = (counts[oreType.id] || 0) + 1;
+    return counts;
+  }, {});
+}
+
+function calculateCrusherPayout(oreList, crusherType) {
+  const payout = oreList.reduce((total, mineral) => {
+    const oreType = getMineralOreType(mineral);
+    const multipliers = getCrusherOreMultipliers(crusherType, oreType);
+    total.coins += oreType.baseCoins * multipliers.coinMultiplier;
+    total.specialCurrency += oreType.baseSpecialCurrency * multipliers.specialCurrencyMultiplier;
+    return total;
+  }, { coins: 0, specialCurrency: 0 });
+
+  return {
+    coins: Math.round(payout.coins),
+    specialCurrency: Math.round(payout.specialCurrency),
+  };
+}
+
+function getCrusherOreMultipliers(crusherType, oreType) {
+  const oreRule = crusherType.oreMultipliers[oreType.id] || crusherType.oreMultipliers.default || {};
+  return {
+    coinMultiplier: (crusherType.coinMultiplier || 1) * (oreRule.coinMultiplier ?? 1),
+    specialCurrencyMultiplier: (crusherType.specialCurrencyMultiplier || 1) * (oreRule.specialCurrencyMultiplier ?? 1),
+  };
+}
+
+function getBatchParticleColor(oreList) {
+  return oreList.length > 0 ? getMineralOreType(oreList[0]).particleColor : DEFAULT_ORE_TYPE.particleColor;
 }
 
 function getCrusherUnloadDuration(loadRatio) {
@@ -1106,7 +1274,7 @@ function finishDeliveredOre(index, mineral) {
   const batch = getCrusherBatch(mineral.crusherBatchId);
   minerals.splice(index, 1);
   collected += 1;
-  spawnCrusherImpactParticles(mineral.x, mineral.y, 1);
+  spawnCrusherImpactParticles(mineral.x, mineral.y, getMineralOreType(mineral));
 
   if (!complete && collected >= completionTarget) {
     complete = true;
@@ -1175,8 +1343,8 @@ function updateCrusherBatches(dt) {
 }
 
 function completeCrusherBatch(batch) {
-  spawnCoinPayout(batch.amount);
-  playCoinBurstSound(batch.amount);
+  spawnCoinPayout(batch.payout.coins);
+  playCoinBurstSound(batch.payout.coins);
   if (!complete) {
     messageEl.textContent = "Ore sold.";
   }
@@ -1344,8 +1512,8 @@ function resolveMineralContacts() {
   }
 }
 
-function spawnCrusherImpactParticles(x, y, amount) {
-  const count = clamp(Math.ceil(amount * 4), 4, 14);
+function spawnCrusherImpactParticles(x, y, oreType) {
+  const count = clamp(Math.ceil(getOreParticleIntensity(oreType) * 4), 4, 14);
   for (let i = 0; i < count; i += 1) {
     particles.push({
       kind: "oreDust",
@@ -1356,13 +1524,14 @@ function spawnCrusherImpactParticles(x, y, amount) {
       age: 0,
       life: random(0.22, 0.42),
       radius: random(1.8, 4),
-      color: random(0, 1) > 0.78 ? "#f0d06a" : "#b8954f",
+      color: random(0, 1) > 0.78 ? "#f0d06a" : oreType.dustColor,
     });
   }
 }
 
 function spawnCrusherAmbientTrail(mineral, dt) {
   if (random(0, 1) > dt * 12) return;
+  const oreType = getMineralOreType(mineral);
   particles.push({
     kind: "oreDust",
     x: mineral.x + random(-4, 4),
@@ -1372,7 +1541,7 @@ function spawnCrusherAmbientTrail(mineral, dt) {
     age: 0,
     life: random(0.18, 0.32),
     radius: random(1.4, 2.8),
-    color: "#c9b26b",
+    color: oreType.particleColor,
   });
 }
 
@@ -1392,9 +1561,13 @@ function spawnCrusherProcessingParticles(batch, dt) {
       age: 0,
       life: random(0.2, 0.48),
       radius: random(1.2, 3.2),
-      color: random(0, 1) > 0.82 ? "#f4d66b" : "#8d7750",
+      color: random(0, 1) > 0.82 ? "#f4d66b" : batch.particleColor,
     });
   }
+}
+
+function getOreParticleIntensity(oreType) {
+  return oreType.mass || 1;
 }
 
 function spawnCoinPayout(amount) {
@@ -1501,20 +1674,20 @@ function updateHud() {
   coinsEl.textContent = coins;
   collectedEl.textContent = `${collected} / ${mineralCount}`;
   pushStateEl.textContent = upgraded ? "Upgraded" : "Base";
-  scoopStateEl.textContent = `${currentSecuredOre} / ${maxScoopCapacity}`;
+  scoopStateEl.textContent = `${currentSecuredOre} / ${getCurrentBladeCapacity()}`;
 
   if (upgraded) {
-    upgradeButton.textContent = "Push Power Upgraded";
+    upgradeButton.textContent = `${activeUpgradeDef.displayName} Upgraded`;
     upgradeButton.disabled = true;
   } else {
-    upgradeButton.textContent = `Push Power Upgrade - ${upgradeCost}`;
-    upgradeButton.disabled = coins < upgradeCost;
+    upgradeButton.textContent = `${activeUpgradeDef.displayName} - ${activeUpgradeDef.cost}`;
+    upgradeButton.disabled = coins < activeUpgradeDef.cost;
   }
 }
 
 function buyUpgrade() {
-  if (upgraded || coins < upgradeCost) return;
-  coins -= upgradeCost;
+  if (upgraded || coins < activeUpgradeDef.cost) return;
+  coins -= activeUpgradeDef.cost;
   upgraded = true;
   messageEl.textContent = "Push power upgraded.";
   updateHud();
@@ -1650,6 +1823,7 @@ function drawBladeSurface() {
 
 function drawBladeRimAndVehicle() {
   const blade = getCurrentBladeConfig();
+  const skin = vehicle.skin;
   const start = getBladeStart();
   const end = start + blade.length;
   const halfWidth = blade.width / 2;
@@ -1681,18 +1855,18 @@ function drawBladeRimAndVehicle() {
   ctx.lineTo(end, halfWidth);
   ctx.stroke();
 
-  ctx.fillStyle = "#cf6a3c";
-  ctx.strokeStyle = "#52291e";
+  ctx.fillStyle = skin.bodyFill;
+  ctx.strokeStyle = skin.bodyStroke;
   ctx.lineWidth = 2;
   ctx.beginPath();
   ctx.roundRect(-15, -11, 28, 22, 5);
   ctx.fill();
   ctx.stroke();
 
-  ctx.fillStyle = "#35464a";
+  ctx.fillStyle = skin.cabinFill;
   ctx.fillRect(-4, -7, 12, 14);
 
-  ctx.fillStyle = "#243136";
+  ctx.fillStyle = skin.treadFill;
   ctx.fillRect(-12, -15, 8, 5);
   ctx.fillRect(-12, 10, 8, 5);
   ctx.fillRect(3, -15, 8, 5);
@@ -1712,18 +1886,19 @@ function drawMineral(mineral) {
   const drawPos = getMineralDrawPosition(mineral);
   const shakeOffset = mineral.shake > 0 ? Math.sin(performance.now() * 0.08 + mineral.x) * 1.4 : 0;
   const scale = mineral.drawScale || 1;
+  const oreType = getMineralOreType(mineral);
 
   ctx.save();
   ctx.translate(drawPos.x + shakeOffset, drawPos.y);
   ctx.scale(scale, scale);
-  ctx.fillStyle = "#c9b26b";
-  ctx.strokeStyle = "#7e6a38";
+  ctx.fillStyle = oreType.color;
+  ctx.strokeStyle = oreType.strokeColor;
   ctx.lineWidth = 2;
   ctx.beginPath();
   ctx.arc(0, 0, mineral.radius, 0, Math.PI * 2);
   ctx.fill();
   ctx.stroke();
-  ctx.fillStyle = "rgba(255, 255, 255, 0.28)";
+  ctx.fillStyle = oreType.highlightColor;
   ctx.beginPath();
   ctx.arc(-2.4, -2.4, 2.2, 0, Math.PI * 2);
   ctx.fill();

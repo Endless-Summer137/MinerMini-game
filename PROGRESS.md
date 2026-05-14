@@ -4,7 +4,7 @@ Last updated: 2026-05-13
 
 ## Current Goal
 
-P0.4 is a playable mining scoop prototype with a quick crusher sell-point feedback pass. The default scoop blade should still behave like a passive solid physical scoop:
+P0.5 is an architecture-readiness checkpoint on top of the playable P0.4 mining scoop prototype. The default scoop blade should still behave like a passive solid physical scoop:
 
 - not magnetic
 - not one-way
@@ -17,6 +17,7 @@ P0.4 is a playable mining scoop prototype with a quick crusher sell-point feedba
 - Vehicle movement with pointer and keyboard controls.
 - Reverse movement: strong opposite input moves backward without turning the scoop/blade around.
 - Mineral spawning, wall collision, mineral-mineral separation, side crusher sell-point, coins, and upgrade UI.
+- P0.5 data tables for future ore, blade, vehicle chassis, vehicle skin, crusher, and upgrade definitions.
 - Load-based vehicle slowdown and shake.
 - Default scoop blade with a continuous U-shaped boundary.
 - Solid two-sided scoop lip collisions:
@@ -54,9 +55,20 @@ P0.4 is a playable mining scoop prototype with a quick crusher sell-point feedba
 
 ## Latest Change
 
-Tuned P0.4 crusher unload timing and added reverse movement while preserving the P0 push-mining scope.
+Completed a P0.5 architecture readiness audit and light data-table refactor while preserving P0.4 gameplay feel.
 
 Important implementation points in `main.js`:
+
+- `ORE_TYPES.basicOre` now owns radius, push resistance, capacity cost, reward values, colors, particles, and tags.
+- Mineral objects keep their ore type through loose, secured, delivered, and crusher payout states.
+- `syncScoopLoadCount`, capture capacity, and crusher load ratio now use capacity units instead of assuming raw ore count forever.
+- `calculateCrusherPayout` uses ore type reward data plus `CRUSHER_TYPES` multipliers.
+- `BLADE_TYPES.scoopBlade` owns blade shape, capacity, capture rules, lip collision tuning, assist hooks, and future ore tag allowances.
+- `VEHICLE_CHASSIS` owns speed, collision size, and reverse tuning; `VEHICLE_SKINS` owns visual-only colors.
+- `UPGRADE_DEFS.pushPower` centralizes the current P0 upgrade cost and effects.
+- `docs/P0.5_ARCHITECTURE_AUDIT.md` records ready extension points and remaining P0-only assumptions.
+
+Previous P0.4 implementation points:
 
 - `crusher` replaces the old `collector` object and is positioned off the main vertical traffic path.
 - `tryStartSecuredOreDelivery` now starts a fast unload batch when secured ore reaches the crusher sell area.
@@ -100,6 +112,17 @@ Important implementation points in `main.js`:
 
 ## Validation Already Run
 
+- `node --check main.js` for P0.5 data-table refactor.
+- P0.5 assertion script checked:
+  - `basicOre` capacity cost and base coin data are preserved
+  - secured load can be summed from ore `capacityCost`
+  - crusher payout uses ore type values and crusher multipliers
+  - current basic ore payout remains one coin per ore
+  - P0.4 load-ratio unload bands and reverse movement behavior still pass
+- Local static server check for P0.5:
+  - `http://127.0.0.1:8000/index.html` returned 200
+  - served `main.js` includes `ORE_TYPES`, `BLADE_TYPES`, `VEHICLE_CHASSIS`, `CRUSHER_TYPES`, and `UPGRADE_DEFS`
+  - served `main.js` still has no old `const collector` object
 - `node --check main.js` for P0.4 crusher sell-point changes.
 - P0.4 tuning assertion script checked:
   - empty load gives no unload duration
@@ -143,14 +166,16 @@ Important implementation points in `main.js`:
 - There is not yet a repeatable automated regression test harness for scoop/mineral behavior.
 - P0.4 crusher/reverse feedback has syntax and assertion validation but still needs hands-on browser playtesting for exact feel.
 - Sound hooks are placeholders only; no audio files or playback implementation exists yet.
+- P0.5 creates extension data tables, but there is still only one active ore, blade, chassis, skin, crusher, and upgrade.
 
 ## Recommended Next Steps
 
 1. Add repeatable physics regression tests for scoop lip containment.
-2. Playtest crusher placement, load-ratio unload timing, and reverse movement feel.
-3. Tune scoop lip friction and restitution after more playtesting.
-4. Add a debug collision overlay toggle.
-5. Improve mineral pile stability under high load.
+2. Split `main.js` into modules before adding many P1/P2 content types.
+3. Playtest crusher placement, load-ratio unload timing, and reverse movement feel.
+4. Tune scoop lip friction and restitution after more playtesting.
+5. Add a debug collision overlay toggle.
+6. Improve mineral pile stability under high load.
 
 ## Workflow Agreement
 
