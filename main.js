@@ -208,17 +208,26 @@ const CRUSHER_TYPES = {
 };
 
 const UPGRADE_DEFS = {
-  pushPower: {
-    id: "pushPower",
+  pushPower1: {
+    id: "pushPower1",
     displayName: "Push Power Upgrade",
-    cost: upgradeCost,
-    effects: {
-      pushForceMultiplier: upgradedPushForceMultiplier,
-      bladeWidthBonus: upgradedBladeWidthBonus,
-      bladeCapacityBonus: 0,
-      crusherSpeedMultiplier: 1,
-      rewardMultiplier: 1,
+    costs: {
+      coins: upgradeCost,
+      specialCurrency: 0,
     },
+    // P0 only requires coins. Future requirements can add numeric levels,
+    // unlockedUpgrades, or unlockFlags without changing the buy button flow.
+    requirements: {
+      unlockedUpgrades: [],
+      unlockFlags: [],
+    },
+    effects: [
+      { target: "chassis.pushPower", op: "multiply", value: upgradedPushForceMultiplier },
+      { target: "blade.width", op: "add", value: upgradedBladeWidthBonus },
+      { target: "blade.capacity", op: "add", value: 0 },
+      { target: "crusher.processingSpeed", op: "multiply", value: 1 },
+      { target: "rewards.coins", op: "multiply", value: 1 },
+    ],
   },
 };
 
@@ -226,7 +235,7 @@ const activeVehicleChassis = VEHICLE_CHASSIS.prototypeHauler;
 const activeVehicleSkin = VEHICLE_SKINS.orangePrototype;
 const activeBladeType = BLADE_TYPES.scoopBlade;
 const activeCrusherType = CRUSHER_TYPES.embeddedGroundCrusher;
-const activeUpgradeDef = UPGRADE_DEFS.pushPower;
+const activeUpgradeDef = UPGRADE_DEFS.pushPower1;
 const canvas = document.getElementById("gameCanvas");
 const ctx = canvas.getContext("2d");
 const coinsEl = document.getElementById("coins");
@@ -917,7 +926,7 @@ function getSaturatedPushResponse(playerPushPower, type) {
 }
 
 function getPlayerPushPower() {
-  return pushForce * getUpgradeEffect("pushForceMultiplier", 1);
+  return pushForce * getUpgradeEffect("chassis.pushPower", 1);
 }
 
 function getCurrentBladeConfig() {
@@ -925,8 +934,8 @@ function getCurrentBladeConfig() {
   const assist = activeBladeType.specialAssist;
   return {
     ...activeBladeType,
-    width: activeBladeType.width + getUpgradeEffect("bladeWidthBonus", 0),
-    capacity: activeBladeType.capacity + getUpgradeEffect("bladeCapacityBonus", 0),
+    width: activeBladeType.width + getUpgradeEffect("blade.width", 0),
+    capacity: activeBladeType.capacity + getUpgradeEffect("blade.capacity", 0),
     innerBackLipThickness: lipCollision.innerBackLipThickness,
     innerBackLipFriction: lipCollision.innerBackLipFriction,
     innerBackLipPushForce: lipCollision.innerBackLipPushForce,
@@ -943,7 +952,20 @@ function getCurrentBladeCapacity() {
 
 function getUpgradeEffect(effectName, fallback) {
   if (!upgraded) return fallback;
-  return activeUpgradeDef.effects[effectName] ?? fallback;
+  return applyUpgradeEffects(activeUpgradeDef.effects, effectName, fallback);
+}
+
+function applyUpgradeEffects(effects, target, baseValue) {
+  return effects
+    .filter((effect) => effect.target === target)
+    .reduce((value, effect) => applyUpgradeEffect(value, effect), baseValue);
+}
+
+function applyUpgradeEffect(value, effect) {
+  if (effect.op === "multiply") return value * effect.value;
+  if (effect.op === "add") return value + effect.value;
+  if (effect.op === "set") return effect.value;
+  return value;
 }
 
 function capMineralSpeed(mineral, speedCap) {
@@ -1680,18 +1702,79 @@ function updateHud() {
     upgradeButton.textContent = `${activeUpgradeDef.displayName} Upgraded`;
     upgradeButton.disabled = true;
   } else {
-    upgradeButton.textContent = `${activeUpgradeDef.displayName} - ${activeUpgradeDef.cost}`;
-    upgradeButton.disabled = coins < activeUpgradeDef.cost;
+    upgradeButton.textContent = `${activeUpgradeDef.displayName} - ${formatUpgradeCosts(activeUpgradeDef)}`;
+    upgradeButton.disabled = !canBuyUpgrade(activeUpgradeDef);
   }
 }
 
 function buyUpgrade() {
-  if (upgraded || coins < activeUpgradeDef.cost) return;
-  coins -= activeUpgradeDef.cost;
+  if (!canBuyUpgrade(activeUpgradeDef)) return;
+  spendUpgradeCosts(activeUpgradeDef);
   upgraded = true;
   messageEl.textContent = "Push power upgraded.";
   updateHud();
   canvas.focus();
+}
+
+function canBuyUpgrade(upgradeDef) {
+  return !upgraded && canAffordUpgrade(upgradeDef) && meetsUpgradeRequirements(upgradeDef);
+}
+
+function canAffordUpgrade(upgradeDef) {
+  return Object.entries(upgradeDef.costs).every(([currency, amount]) => getCurrencyAmount(currency) >= amount);
+}
+
+function spendUpgradeCosts(upgradeDef) {
+  coins -= getUpgradeCost(upgradeDef, "coins");
+}
+
+function getUpgradeCost(upgradeDef, currency) {
+  return upgradeDef.costs[currency] || 0;
+}
+
+function getCurrencyAmount(currency) {
+  if (currency === "coins") return coins;
+  if (currency === "specialCurrency") return 0;
+  return 0;
+}
+
+function meetsUpgradeRequirements(upgradeDef) {
+  const context = getUpgradeRequirementContext();
+  return Object.entries(upgradeDef.requirements).every(([requirement, expected]) => {
+    if (requirement === "unlockedUpgrades") {
+      return expected.every((upgradeId) => context.unlockedUpgrades.includes(upgradeId));
+    }
+
+    if (requirement === "unlockFlags") {
+      return expected.every((flag) => context.unlockFlags.includes(flag));
+    }
+
+    return getRequirementValue(context, requirement) >= expected;
+  });
+}
+
+function getUpgradeRequirementContext() {
+  return {
+    baseCampLevel: 0,
+    cartCapacityLevel: 0,
+    moveSpeedLevel: 0,
+    pushPowerLevel: upgraded ? 1 : 0,
+    unlockedUpgrades: upgraded ? [activeUpgradeDef.id] : [],
+    unlockFlags: [],
+  };
+}
+
+function getRequirementValue(context, requirement) {
+  return context[requirement] || 0;
+}
+
+function formatUpgradeCosts(upgradeDef) {
+  const parts = [];
+  const coinCost = getUpgradeCost(upgradeDef, "coins");
+  const specialCost = getUpgradeCost(upgradeDef, "specialCurrency");
+  if (coinCost > 0) parts.push(coinCost);
+  if (specialCost > 0) parts.push(`${specialCost} SC`);
+  return parts.length > 0 ? parts.join(" + ") : "Free";
 }
 
 function draw() {

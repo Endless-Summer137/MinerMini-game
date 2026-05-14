@@ -65,7 +65,8 @@ Important implementation points in `main.js`:
 - `calculateCrusherPayout` uses ore type reward data plus `CRUSHER_TYPES` multipliers.
 - `BLADE_TYPES.scoopBlade` owns blade shape, capacity, capture rules, lip collision tuning, assist hooks, and future ore tag allowances.
 - `VEHICLE_CHASSIS` owns speed, collision size, and reverse tuning; `VEHICLE_SKINS` owns visual-only colors.
-- `UPGRADE_DEFS.pushPower` centralizes the current P0 upgrade cost and effects.
+- `UPGRADE_DEFS.pushPower1` centralizes the current P0 upgrade `costs`, `requirements`, and ordered `effects`.
+- Upgrade purchase now routes through helper checks for affordability and requirements before spending costs.
 - `docs/P0.5_ARCHITECTURE_AUDIT.md` records ready extension points and remaining P0-only assumptions.
 
 Previous P0.4 implementation points:
@@ -118,6 +119,8 @@ Important implementation points in `main.js`:
   - secured load can be summed from ore `capacityCost`
   - crusher payout uses ore type values and crusher multipliers
   - current basic ore payout remains one coin per ore
+  - current push upgrade still costs 20 coins and has no blocking P0 requirements
+  - upgrade effects still preserve P0 push force and blade width behavior
   - P0.4 load-ratio unload bands and reverse movement behavior still pass
 - Local static server check for P0.5:
   - `http://127.0.0.1:8000/index.html` returned 200
@@ -167,6 +170,7 @@ Important implementation points in `main.js`:
 - P0.4 crusher/reverse feedback has syntax and assertion validation but still needs hands-on browser playtesting for exact feel.
 - Sound hooks are placeholders only; no audio files or playback implementation exists yet.
 - P0.5 creates extension data tables, but there is still only one active ore, blade, chassis, skin, crusher, and upgrade.
+- Upgrade prerequisites are data-shaped, but there is no multi-upgrade graph validator yet.
 
 ## Recommended Next Steps
 
