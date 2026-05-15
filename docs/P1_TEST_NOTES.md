@@ -106,6 +106,8 @@ Scope:
 - non-depleted segment solid bodies that block vehicle body and active tool heads
 - separate mine areas that detect Drill contact and pressure
 - Drill contact lock / bite feel on valid surface contact
+- nested vein config for future variant tuning
+- respawn config fields reserved as interface-only data
 - Drill progressive damage and loose ore spawning
 - spawned ore enters the existing loose ore -> Scoop -> crusher loop
 
@@ -113,7 +115,8 @@ Out of scope for P1-C:
 
 - Hammer burst mining
 - corridor / corner test
-- vein respawn
+- real vein respawn
+- server time, trusted platform time, client local time, or offline reward logic
 - ore rarity
 - new formal ore economy
 - merchants, base camp, cart cargo, blockers, push-blade mechanics, formal art, formal sound, Cocos migration, or mobile platform integration
@@ -126,6 +129,9 @@ Manual checklist:
 - Switching while carrying secured ore is still blocked.
 - Drill and Hammer still push loose ore instead of passing through it.
 - Hammer remains push-only and does not mine veins.
+- Vein config migration preserves the current P1-C test vein values.
+- Respawn config exists but remains disabled; no real respawn occurs.
+- Current P1 ore output remains `basicOre`.
 - Vehicle body cannot pass through intact, cracked, or heavy-cracked vein segments.
 - Drill is stopped at the segment surface instead of slowly passing through the vein.
 - Drill does not slide freely around the circular segment surface while pushing into it.
@@ -143,7 +149,11 @@ Manual checklist:
 Validation notes:
 
 - `node --check main.js` passed for P1-C.
-- P1-C Drill bite assertion script passed for valid contact lock, tangential slide damping, no magnetic lock after lost tip contact, release/reverse exit, surface-contact Drill mining, no passive mining, single-segment depletion, Hammer non-mining, spawned loose ore, Scoop securing, and push upgrade flow.
+- P1-C vein config assertion script passed for nested config migration, legacy flat config migration, exact assigned-yield sum, disabled respawn interface, current `basicOre` output, Drill bite preservation, no passive mining, no real respawn, single-segment depletion, Hammer non-mining, spawned loose ore, Scoop securing, and push upgrade flow.
 - Local static server returned 200 for `index.html`.
 - Served `main.js` included `VEIN_DEFS`, `updateVeins`, `spawnProgressiveVeinOre`, and `drawVeins`.
 - In-app browser reloaded `http://127.0.0.1:8000/index.html` with no console errors.
+
+Related note:
+
+- `docs/P1_VEIN_CONFIG_NOTES.md`

@@ -4,7 +4,7 @@ Last updated: 2026-05-15
 
 ## Current Goal
 
-P1-C is a segmented ore vein and Drill progressive spawning checkpoint on top of the playable P1-A/P1-B prototype. The current follow-up makes Drill contact bite into non-depleted vein surfaces instead of sliding freely around circular segments. The default scoop blade should still behave like a passive solid physical scoop:
+P1-C is a segmented ore vein and Drill progressive spawning checkpoint on top of the playable P1-A/P1-B prototype. The current follow-up centralizes vein config and reserves respawn fields without enabling real respawn. The default scoop blade should still behave like a passive solid physical scoop:
 
 - not magnetic
 - not one-way
@@ -35,12 +35,15 @@ P1-C is a segmented ore vein and Drill progressive spawning checkpoint on top of
   - Drill and Hammer use push-only solid tool-head contact against loose ore, but do not mine, damage, spawn ore, secure ore, or interact with veins
 - P1-C segmented ore vein prototype:
   - one default test vein has 3 segments
-  - each segment tracks integrity, assigned yield, spawned ore, visual state, solid body, and mine area
+  - `VEIN_DEFS.testThreeSegmentVein` uses a nested config shape for placement, segment, yield, ore output, Drill, Hammer placeholder, and respawn placeholder data
+  - each segment tracks max/current integrity, assigned yield, spawned ore, visual state, solid body, and mine area
   - non-depleted segments block the vehicle body and active tool heads before Drill damage is applied
   - depleted segments render as smaller broken residue and no longer use solid mineable collision
   - vein final yield is `floor(baseYield * yieldMultiplier)`, and assigned segment yields sum exactly to it
+  - `oreTypeWeights` is reserved for future mixed-output veins, while current P1 output remains only `basicOre`
   - Drill can progressively damage only the contacted solid segment when the Drill tip is touching and the player is pressing toward it
   - valid Drill contact applies a bite lock that strongly damps tangential sliding along circular vein surfaces
+  - `respawn: { enabled: false, respawnSeconds: null, timeSource: "none" }` is interface-only; no real respawn timing exists yet
   - damaged segments spawn normal loose ore over time, and spawned ore enters the existing Scoop -> crusher loop
   - Hammer remains a push-only placeholder and does not mine veins
 - Load-based vehicle slowdown and shake.
@@ -80,16 +83,19 @@ P1-C is a segmented ore vein and Drill progressive spawning checkpoint on top of
 
 ## Latest Change
 
-Implemented the P1-C Drill contact lock / bite follow-up while preserving P1-A map/camera behavior and P1-B tool switching/push-only contact.
+Implemented the P1-C vein config migration and respawn interface audit while preserving P1-A map/camera behavior, P1-B tool switching/push-only contact, and the current P1-C Drill bite feel.
 
 Important implementation points in `main.js`:
 
-- `VEIN_DEFS.testThreeSegmentVein` defines the default 3-segment test vein, base yield, multiplier, position, segment spacing, solid radius, and mine-area radius.
+- `VEIN_DEFS.testThreeSegmentVein` defines the default 3-segment test vein using nested `placement`, `segment`, `yield`, `oreOutput`, `drill`, `hammer`, and `respawn` config blocks.
+- `migrateVeinDef` accepts the new nested config shape and the older flat P1-C fields so prototype data can migrate without a broad rewrite.
 - `createVeinFromDef` calculates `finalYield = floor(baseYield * yieldMultiplier)` and distributes `assignedYield` exactly across segments.
-- Each segment stores `integrity`, `assignedYield`, `spawnedOre`, `visualState`, `depleted`, `solidBody`, `mineArea`, and compatibility `hitArea`.
+- Each segment stores `maxIntegrity`, `integrity`, `assignedYield`, `spawnedOre`, `visualState`, `depleted`, `solidBody`, `mineArea`, compatibility `hitArea`, and pointers to the active Drill/Hammer/output config.
 - `resolveVehicleAndToolVeinContacts` keeps the vehicle body and active tool head outside non-depleted segment `solidBody` circles.
-- `getActiveDrillAction` only mines while active tool is Drill and Drill tip has surface contact plus input pressure toward the contacted segment.
-- `applyDrillBiteLock` strongly reduces tangential movement while the Drill is biting, keeps the tip near the surface, and exits immediately when input is released, reversed, or contact is lost.
+- Drill pressure threshold, damage, resistance, contact tolerance, collision passes, and bite tuning now read from vein config while preserving current values.
+- Hammer resistance/damage/radius fields are reserved in config but remain unused; Hammer is still only a push-only placeholder.
+- `getVeinRespawnConfig` exposes the respawn config shape, but no respawn timer, server time, client local time, offline reward, or respawn behavior is implemented.
+- `docs/P1_VEIN_CONFIG_NOTES.md` records the future time-source preference: server/trusted platform time first, client local only as debug/fallback.
 - Progressive spawning uses `floor(segment.assignedYield * damageProgress)` and caps against both segment yield and vein final yield.
 - Segment auto-finish only applies to the currently drilled heavy-cracked segment at `veinFinishThreshold`.
 - `drawVeins` uses simple debug shapes, mine-area rings, cracks, state labels, active segment highlight, and smaller depleted residue; no formal art was added.
@@ -194,6 +200,10 @@ Important implementation points in `main.js`:
   - debug overlay is drawn in screen space
 - P1-C segmented vein assertion script checked:
   - default vein has 3 segments
+  - nested config migration preserves the current test vein values
+  - old flat config fields can migrate into the same runtime shape
+  - respawn config remains disabled and interface-only
+  - current P1 ore output remains `basicOre`
   - non-depleted segments expose `solidBody` and `mineArea`
   - vehicle body and Drill tool collision resolve out of solid segments
   - depleted segments skip solid collision while untouched segments remain solid

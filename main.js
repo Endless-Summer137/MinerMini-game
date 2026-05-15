@@ -271,20 +271,63 @@ const TOOL_KEY_BINDINGS = Object.values(TOOL_TYPES).reduce((bindings, tool) => {
   return bindings;
 }, {});
 
+const VEIN_CONFIG_VERSION = 2;
+
 const VEIN_DEFS = {
   testThreeSegmentVein: {
+    configVersion: VEIN_CONFIG_VERSION,
     id: "testThreeSegmentVein",
     displayName: "Test Vein",
-    segmentCount: 3,
-    baseYield: 12,
-    yieldMultiplier: 1,
-    oreType: DEFAULT_ORE_TYPE,
-    centerX: 540,
-    centerY: 360,
-    segmentSpacing: 44,
-    angle: -0.18,
-    solidRadius: 25,
-    hitRadius: 30,
+    placement: {
+      centerX: 540,
+      centerY: 360,
+      segmentSpacing: 44,
+      angle: -0.18,
+    },
+    segment: {
+      segmentCount: 3,
+      totalIntegrity: 3,
+      segmentIntegrity: 1,
+      finishThreshold: veinFinishThreshold,
+      visualStateThresholds: {
+        cracked: 0.67,
+        heavyCracked: 0.34,
+      },
+      solidRadius: 25,
+      hitRadius: 30,
+    },
+    yield: {
+      baseYield: 12,
+      yieldMultiplier: 1,
+    },
+    oreOutput: {
+      oreType: DEFAULT_ORE_TYPE,
+      oreTypeWeights: { basicOre: 1 },
+      spawnScatterRadius: veinSpawnScatterRadius,
+    },
+    drill: {
+      resistance: 1,
+      damagePerSecond: drillIntegrityDamagePerSecond,
+      pressureThreshold: drillPressureThreshold,
+      contactTolerance: veinSolidContactTolerance,
+      collisionIterations: veinCollisionIterations,
+      biteTangentialRetention: drillBiteTangentialRetention,
+      biteMaxTangentialCorrection: drillBiteMaxTangentialCorrection,
+      biteSurfaceBias: drillBiteSurfaceBias,
+      biteMaxSurfaceCorrection: drillBiteMaxSurfaceCorrection,
+      biteShakeAmount: drillBiteShakeAmount,
+    },
+    hammer: {
+      resistance: 1,
+      damagePerHit: 0,
+      hitRadius: 0,
+      affectedSegments: 0,
+    },
+    respawn: {
+      enabled: false,
+      respawnSeconds: null,
+      timeSource: "none",
+    },
   },
 };
 
@@ -540,39 +583,127 @@ function createVeins() {
 }
 
 function createVeinFromDef(def) {
-  const finalYield = Math.floor(def.baseYield * def.yieldMultiplier);
-  const assignedYields = distributeVeinYield(finalYield, def.segmentCount);
-  const centerOffset = (def.segmentCount - 1) / 2;
-  const dirX = Math.cos(def.angle);
-  const dirY = Math.sin(def.angle);
+  const config = migrateVeinDef(def);
+  const finalYield = Math.floor(config.yield.baseYield * config.yield.yieldMultiplier);
+  const assignedYields = distributeVeinYield(finalYield, config.segment.segmentCount);
+  const centerOffset = (config.segment.segmentCount - 1) / 2;
+  const dirX = Math.cos(config.placement.angle);
+  const dirY = Math.sin(config.placement.angle);
 
   return {
-    id: def.id,
-    displayName: def.displayName,
-    oreType: def.oreType,
-    baseYield: def.baseYield,
-    yieldMultiplier: def.yieldMultiplier,
+    id: config.id,
+    displayName: config.displayName,
+    configVersion: config.configVersion,
+    config,
+    oreType: config.oreOutput.oreType,
+    oreTypeWeights: config.oreOutput.oreTypeWeights,
+    baseYield: config.yield.baseYield,
+    yieldMultiplier: config.yield.yieldMultiplier,
     finalYield,
+    respawn: config.respawn,
     segments: assignedYields.map((assignedYield, index) => {
-      const offset = (index - centerOffset) * def.segmentSpacing;
-      const x = def.centerX + dirX * offset;
-      const y = def.centerY + dirY * offset;
+      const offset = (index - centerOffset) * config.placement.segmentSpacing;
+      const x = config.placement.centerX + dirX * offset;
+      const y = config.placement.centerY + dirY * offset;
       return {
-        id: `${def.id}-segment-${index + 1}`,
+        id: `${config.id}-segment-${index + 1}`,
         index,
         x,
         y,
-        integrity: 1,
+        maxIntegrity: config.segment.segmentIntegrity,
+        integrity: config.segment.segmentIntegrity,
         assignedYield,
         spawnedOre: 0,
         visualState: "intact",
         depleted: false,
-        solidBody: { x, y, radius: def.solidRadius },
-        mineArea: { x, y, radius: def.hitRadius },
-        hitArea: { x, y, radius: def.hitRadius },
+        finishThreshold: config.segment.finishThreshold,
+        visualStateThresholds: config.segment.visualStateThresholds,
+        drill: config.drill,
+        hammer: config.hammer,
+        oreOutput: config.oreOutput,
+        solidBody: { x, y, radius: config.segment.solidRadius },
+        mineArea: { x, y, radius: config.segment.hitRadius },
+        hitArea: { x, y, radius: config.segment.hitRadius },
       };
     }),
   };
+}
+
+function migrateVeinDef(def) {
+  // P1-C accepts both the old flat vein fields and the new nested config shape.
+  // Future test veins should copy the nested shape in VEIN_DEFS, while this
+  // migration keeps early prototype data from requiring a rewrite.
+  const segmentCount = def.segment?.segmentCount ?? def.segmentCount ?? 1;
+  const segmentIntegrity = def.segment?.segmentIntegrity
+    ?? def.segmentIntegrity
+    ?? ((def.segment?.totalIntegrity ?? def.totalIntegrity ?? segmentCount) / Math.max(segmentCount, 1));
+  const totalIntegrity = def.segment?.totalIntegrity ?? def.totalIntegrity ?? segmentIntegrity * segmentCount;
+
+  return {
+    configVersion: def.configVersion ?? 1,
+    id: def.id,
+    displayName: def.displayName,
+    placement: {
+      centerX: def.placement?.centerX ?? def.centerX ?? getWorldCenterX(),
+      centerY: def.placement?.centerY ?? def.centerY ?? getWorldCenterY(),
+      segmentSpacing: def.placement?.segmentSpacing ?? def.segmentSpacing ?? 44,
+      angle: def.placement?.angle ?? def.angle ?? 0,
+    },
+    segment: {
+      segmentCount,
+      totalIntegrity,
+      segmentIntegrity,
+      finishThreshold: def.segment?.finishThreshold ?? def.finishThreshold ?? veinFinishThreshold,
+      visualStateThresholds: {
+        cracked: def.segment?.visualStateThresholds?.cracked ?? 0.67,
+        heavyCracked: def.segment?.visualStateThresholds?.heavyCracked ?? 0.34,
+      },
+      solidRadius: def.segment?.solidRadius ?? def.solidRadius ?? 25,
+      hitRadius: def.segment?.hitRadius ?? def.hitRadius ?? 30,
+    },
+    yield: {
+      baseYield: def.yield?.baseYield ?? def.baseYield ?? 0,
+      yieldMultiplier: def.yield?.yieldMultiplier ?? def.yieldMultiplier ?? 1,
+    },
+    oreOutput: {
+      oreType: resolveVeinOreType(def.oreOutput?.oreType ?? def.oreType ?? DEFAULT_ORE_TYPE),
+      oreTypeWeights: def.oreOutput?.oreTypeWeights ?? getDefaultOreTypeWeights(def.oreOutput?.oreType ?? def.oreType ?? DEFAULT_ORE_TYPE),
+      spawnScatterRadius: def.oreOutput?.spawnScatterRadius ?? def.spawnScatterRadius ?? veinSpawnScatterRadius,
+    },
+    drill: {
+      resistance: def.drill?.resistance ?? def.drillResistance ?? 1,
+      damagePerSecond: def.drill?.damagePerSecond ?? def.drillDamagePerSecond ?? drillIntegrityDamagePerSecond,
+      pressureThreshold: def.drill?.pressureThreshold ?? def.pressureThreshold ?? drillPressureThreshold,
+      contactTolerance: def.drill?.contactTolerance ?? def.contactTolerance ?? veinSolidContactTolerance,
+      collisionIterations: def.drill?.collisionIterations ?? def.collisionIterations ?? veinCollisionIterations,
+      biteTangentialRetention: def.drill?.biteTangentialRetention ?? def.drillBiteTangentialRetention ?? drillBiteTangentialRetention,
+      biteMaxTangentialCorrection: def.drill?.biteMaxTangentialCorrection ?? def.drillBiteMaxTangentialCorrection ?? drillBiteMaxTangentialCorrection,
+      biteSurfaceBias: def.drill?.biteSurfaceBias ?? def.drillBiteSurfaceBias ?? drillBiteSurfaceBias,
+      biteMaxSurfaceCorrection: def.drill?.biteMaxSurfaceCorrection ?? def.drillBiteMaxSurfaceCorrection ?? drillBiteMaxSurfaceCorrection,
+      biteShakeAmount: def.drill?.biteShakeAmount ?? def.drillBiteShakeAmount ?? drillBiteShakeAmount,
+    },
+    hammer: {
+      resistance: def.hammer?.resistance ?? def.hammerResistance ?? 1,
+      damagePerHit: def.hammer?.damagePerHit ?? def.hammerDamagePerHit ?? 0,
+      hitRadius: def.hammer?.hitRadius ?? def.hammerHitRadius ?? 0,
+      affectedSegments: def.hammer?.affectedSegments ?? def.affectedSegments ?? 0,
+    },
+    respawn: {
+      enabled: def.respawn?.enabled ?? false,
+      respawnSeconds: def.respawn?.respawnSeconds ?? null,
+      timeSource: def.respawn?.timeSource ?? "none",
+    },
+  };
+}
+
+function resolveVeinOreType(oreTypeOrId) {
+  if (typeof oreTypeOrId === "string") return ORE_TYPES[oreTypeOrId] || DEFAULT_ORE_TYPE;
+  return oreTypeOrId || DEFAULT_ORE_TYPE;
+}
+
+function getDefaultOreTypeWeights(oreTypeOrId) {
+  const oreType = resolveVeinOreType(oreTypeOrId);
+  return { [oreType.id]: 1 };
 }
 
 function distributeVeinYield(finalYield, segmentCount) {
@@ -676,6 +807,11 @@ function getWorldCenterX() {
   return bounds.x + bounds.width / 2;
 }
 
+function getWorldCenterY() {
+  const bounds = getWorldBounds();
+  return bounds.y + bounds.height / 2;
+}
+
 function getWorldBottomY(offset) {
   const bounds = getWorldBounds();
   return bounds.y + bounds.height - offset;
@@ -745,8 +881,10 @@ function updateVeins(dt) {
   if (!drillAction) return;
 
   const { vein, segment } = drillAction;
+  const drillConfig = getSegmentDrillConfig(segment);
+  const damagePerSecond = drillConfig.damagePerSecond / Math.max(drillConfig.resistance || 1, 0.001);
   activeDrillTarget = { veinId: vein.id, segmentId: segment.id };
-  segment.integrity = clamp(segment.integrity - drillIntegrityDamagePerSecond * lastControlInput.strength * dt, 0, 1);
+  segment.integrity = clamp(segment.integrity - damagePerSecond * lastControlInput.strength * dt, 0, segment.maxIntegrity);
   updateVeinSegmentVisualState(segment);
   spawnProgressiveVeinOre(vein, segment);
 
@@ -774,7 +912,7 @@ function getActiveDrillAction(input) {
         ? { x: dx / distanceToSegment, y: dy / distanceToSegment }
         : { x: vehicle.dirX, y: vehicle.dirY };
       const pressureDot = input.x * directionToSegment.x + input.y * directionToSegment.y;
-      if (pressureDot < drillPressureThreshold) continue;
+      if (pressureDot < getSegmentDrillConfig(segment).pressureThreshold) continue;
 
       const score = pressureDot * 1000 + surfaceContact.depth;
       if (!bestAction || score > bestAction.score) {
@@ -794,21 +932,22 @@ function applyDrillBiteLock(input, previousX, previousY, toolBoundary) {
   // Solid circular vein collision can otherwise let the Drill slide sideways
   // around the curve. During valid pressure, keep only a small fraction of this
   // frame's tangential movement so the tool feels like it bites into the face.
+  const drillConfig = getSegmentDrillConfig(action.segment);
   const tangent = getDrillBiteTangent(action.directionToSegment);
   const moveX = vehicle.x - previousX;
   const moveY = vehicle.y - previousY;
   const tangentialMove = moveX * tangent.x + moveY * tangent.y;
   const correctionMagnitude = clamp(
-    -tangentialMove * (1 - drillBiteTangentialRetention),
-    -drillBiteMaxTangentialCorrection,
-    drillBiteMaxTangentialCorrection
+    -tangentialMove * (1 - drillConfig.biteTangentialRetention),
+    -drillConfig.biteMaxTangentialCorrection,
+    drillConfig.biteMaxTangentialCorrection
   );
   const x = tangent.x * correctionMagnitude;
   const y = tangent.y * correctionMagnitude;
   vehicle.x += x;
   vehicle.y += y;
 
-  keepDrillBiteOnSurface(action.segment);
+  keepDrillBiteOnSurface(action.segment, drillConfig);
   resolveVehicleAndToolVeinContacts(toolBoundary);
   const lockedAction = getActiveDrillAction(input);
   if (!lockedAction) return { active: false, x, y };
@@ -821,7 +960,7 @@ function applyDrillBiteLock(input, previousX, previousY, toolBoundary) {
     y: tip.y,
     pressureDot: lockedAction.pressureDot,
   };
-  vehicle.overloadShake = Math.max(vehicle.overloadShake, drillBiteShakeAmount * input.strength);
+  vehicle.overloadShake = Math.max(vehicle.overloadShake, drillConfig.biteShakeAmount * input.strength);
   return { active: true, x, y };
 }
 
@@ -832,7 +971,7 @@ function getDrillBiteTangent(directionToSegment) {
   };
 }
 
-function keepDrillBiteOnSurface(segment) {
+function keepDrillBiteOnSurface(segment, drillConfig = getSegmentDrillConfig(segment)) {
   const tip = getDrillTipColliderWorldPosition(TOOL_TYPES.drill);
   const solid = segment.solidBody;
   const dx = tip.x - solid.x;
@@ -840,11 +979,11 @@ function keepDrillBiteOnSurface(segment) {
   const distanceBetween = Math.hypot(dx, dy);
   if (distanceBetween <= 0.001) return { x: 0, y: 0 };
 
-  const desiredDistance = solid.radius + tip.radius - drillBiteSurfaceBias;
+  const desiredDistance = solid.radius + tip.radius - drillConfig.biteSurfaceBias;
   const correctionDistance = clamp(
     desiredDistance - distanceBetween,
-    -drillBiteMaxSurfaceCorrection,
-    drillBiteMaxSurfaceCorrection
+    -drillConfig.biteMaxSurfaceCorrection,
+    drillConfig.biteMaxSurfaceCorrection
   );
   const normalX = dx / distanceBetween;
   const normalY = dy / distanceBetween;
@@ -862,14 +1001,14 @@ function getDrillTipColliderWorldPosition(tool = TOOL_TYPES.drill) {
 }
 
 function spawnProgressiveVeinOre(vein, segment) {
-  const damageProgress = 1 - segment.integrity;
+  const damageProgress = 1 - getVeinSegmentIntegrityRatio(segment);
   const targetSpawned = Math.floor(segment.assignedYield * damageProgress);
   const newOreToSpawn = targetSpawned - segment.spawnedOre;
   if (newOreToSpawn > 0) spawnVeinOre(vein, segment, newOreToSpawn);
 }
 
 function canAutoFinishVeinSegment(segment) {
-  return segment.integrity <= veinFinishThreshold && segment.visualState === "heavy_cracked";
+  return getVeinSegmentIntegrityRatio(segment) <= segment.finishThreshold && segment.visualState === "heavy_cracked";
 }
 
 function finishVeinSegment(vein, segment) {
@@ -886,7 +1025,7 @@ function spawnVeinOre(vein, segment, requestedCount) {
   if (spawnCount <= 0) return 0;
 
   for (let i = 0; i < spawnCount; i += 1) {
-    const oreType = vein.oreType;
+    const oreType = pickVeinOreType(vein);
     const position = getVeinOreSpawnPosition(segment, oreType.radius);
     const mineral = createLooseMineral(position.x, position.y, oreType);
     mineral.sourceVeinId = vein.id;
@@ -904,7 +1043,7 @@ function spawnVeinOre(vein, segment, requestedCount) {
 
 function getVeinOreSpawnPosition(segment, mineralRadius) {
   const angle = random(0, Math.PI * 2);
-  const distanceFromCenter = segment.hitArea.radius + mineralRadius + random(2, veinSpawnScatterRadius);
+  const distanceFromCenter = segment.hitArea.radius + mineralRadius + random(2, segment.oreOutput.spawnScatterRadius);
   const outwardX = Math.cos(angle);
   const outwardY = Math.sin(angle);
   const bounds = getPlayableBounds(mineralRadius);
@@ -921,8 +1060,52 @@ function getVeinSpawnedOre(vein) {
   return vein.segments.reduce((total, segment) => total + segment.spawnedOre, 0);
 }
 
+function pickVeinOreType(vein) {
+  const weights = vein.oreTypeWeights || getDefaultOreTypeWeights(vein.oreType);
+  const entries = Object.entries(weights).filter(([, weight]) => weight > 0);
+  const totalWeight = entries.reduce((total, [, weight]) => total + weight, 0);
+  if (entries.length === 0 || totalWeight <= 0) return vein.oreType || DEFAULT_ORE_TYPE;
+
+  let roll = random(0, totalWeight);
+  for (const [oreTypeId, weight] of entries) {
+    roll -= weight;
+    if (roll <= 0) return resolveVeinOreType(oreTypeId);
+  }
+
+  return resolveVeinOreType(entries[entries.length - 1][0]);
+}
+
+function getVeinRespawnConfig(vein) {
+  // Interface only in P1-C: real respawn timing, server time, and offline
+  // reward logic are deliberately not implemented yet.
+  return vein.respawn || { enabled: false, respawnSeconds: null, timeSource: "none" };
+}
+
 function isVeinSegmentSolid(segment) {
   return !segment.depleted && segment.visualState !== "depleted";
+}
+
+function getSegmentDrillConfig(segment) {
+  return segment.drill || getDefaultVeinDrillConfig();
+}
+
+function getDefaultVeinDrillConfig() {
+  return {
+    resistance: 1,
+    damagePerSecond: drillIntegrityDamagePerSecond,
+    pressureThreshold: drillPressureThreshold,
+    contactTolerance: veinSolidContactTolerance,
+    collisionIterations: veinCollisionIterations,
+    biteTangentialRetention: drillBiteTangentialRetention,
+    biteMaxTangentialCorrection: drillBiteMaxTangentialCorrection,
+    biteSurfaceBias: drillBiteSurfaceBias,
+    biteMaxSurfaceCorrection: drillBiteMaxSurfaceCorrection,
+    biteShakeAmount: drillBiteShakeAmount,
+  };
+}
+
+function getVeinSegmentIntegrityRatio(segment) {
+  return clamp(segment.integrity / Math.max(segment.maxIntegrity || 1, 0.001), 0, 1);
 }
 
 function updateVeinSegmentVisualState(segment) {
@@ -932,9 +1115,9 @@ function updateVeinSegmentVisualState(segment) {
 
   if (segment.depleted) {
     segment.visualState = "depleted";
-  } else if (segment.integrity <= 0.34) {
+  } else if (getVeinSegmentIntegrityRatio(segment) <= segment.visualStateThresholds.heavyCracked) {
     segment.visualState = "heavy_cracked";
-  } else if (segment.integrity <= 0.67) {
+  } else if (getVeinSegmentIntegrityRatio(segment) <= segment.visualStateThresholds.cracked) {
     segment.visualState = "cracked";
   } else {
     segment.visualState = "intact";
@@ -1312,7 +1495,7 @@ function getToolContactFallbackNormal(collider, local) {
 function getDrillSegmentSurfaceContact(segment) {
   if (!isVeinSegmentSolid(segment)) return null;
 
-  const contacts = getToolVeinSegmentContacts(TOOL_TYPES.drill, segment, veinSolidContactTolerance);
+  const contacts = getToolVeinSegmentContacts(TOOL_TYPES.drill, segment, getSegmentDrillConfig(segment).contactTolerance);
   return contacts.find((contact) => contact.kind === "drillTip") || null;
 }
 
@@ -3319,7 +3502,7 @@ function getVehicleAndBladeWallCorrection(blade) {
 function resolveVehicleAndToolVeinContacts(toolBoundary) {
   const totalCorrection = { x: 0, y: 0 };
 
-  for (let iteration = 0; iteration < veinCollisionIterations; iteration += 1) {
+  for (let iteration = 0; iteration < getVeinCollisionIterationCount(); iteration += 1) {
     const correction = resolveSingleVehicleAndToolVeinContactPass(toolBoundary);
     totalCorrection.x += correction.x;
     totalCorrection.y += correction.y;
@@ -3327,6 +3510,12 @@ function resolveVehicleAndToolVeinContacts(toolBoundary) {
   }
 
   return totalCorrection;
+}
+
+function getVeinCollisionIterationCount() {
+  return veins.reduce((maxIterations, vein) => {
+    return Math.max(maxIterations, vein.config?.drill?.collisionIterations || veinCollisionIterations);
+  }, veinCollisionIterations);
 }
 
 function resolveSingleVehicleAndToolVeinContactPass(toolBoundary) {
