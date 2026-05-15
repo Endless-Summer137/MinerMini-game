@@ -1,10 +1,10 @@
 # Miner Mini Game Progress
 
-Last updated: 2026-05-14
+Last updated: 2026-05-15
 
 ## Current Goal
 
-P1-C is a segmented ore vein and Drill progressive spawning checkpoint on top of the playable P1-A/P1-B prototype. The default scoop blade should still behave like a passive solid physical scoop:
+P1-C is a segmented ore vein and Drill progressive spawning checkpoint on top of the playable P1-A/P1-B prototype. The current follow-up makes non-depleted vein segments act as solid mineable surfaces instead of ghost trigger zones. The default scoop blade should still behave like a passive solid physical scoop:
 
 - not magnetic
 - not one-way
@@ -35,9 +35,11 @@ P1-C is a segmented ore vein and Drill progressive spawning checkpoint on top of
   - Drill and Hammer use push-only solid tool-head contact against loose ore, but do not mine, damage, spawn ore, secure ore, or interact with veins
 - P1-C segmented ore vein prototype:
   - one default test vein has 3 segments
-  - each segment tracks integrity, assigned yield, spawned ore, visual state, and a circular hit area
+  - each segment tracks integrity, assigned yield, spawned ore, visual state, solid body, and mine area
+  - non-depleted segments block the vehicle body and active tool heads before Drill damage is applied
+  - depleted segments render as smaller broken residue and no longer use solid mineable collision
   - vein final yield is `floor(baseYield * yieldMultiplier)`, and assigned segment yields sum exactly to it
-  - Drill can progressively damage only the contacted segment when the player is pressing toward it
+  - Drill can progressively damage only the contacted solid segment when the player is pressing toward it
   - damaged segments spawn normal loose ore over time, and spawned ore enters the existing Scoop -> crusher loop
   - Hammer remains a push-only placeholder and does not mine veins
 - Load-based vehicle slowdown and shake.
@@ -77,17 +79,18 @@ P1-C is a segmented ore vein and Drill progressive spawning checkpoint on top of
 
 ## Latest Change
 
-Implemented P1-C segmented ore vein Drill mining while preserving P1-A map/camera behavior and P1-B tool switching/push-only contact.
+Implemented the P1-C solid mineable surface follow-up for segmented veins while preserving P1-A map/camera behavior and P1-B tool switching/push-only contact.
 
 Important implementation points in `main.js`:
 
-- `VEIN_DEFS.testThreeSegmentVein` defines the default 3-segment test vein, base yield, multiplier, position, segment spacing, and hit radius.
+- `VEIN_DEFS.testThreeSegmentVein` defines the default 3-segment test vein, base yield, multiplier, position, segment spacing, solid radius, and mine-area radius.
 - `createVeinFromDef` calculates `finalYield = floor(baseYield * yieldMultiplier)` and distributes `assignedYield` exactly across segments.
-- Each segment stores `integrity`, `assignedYield`, `spawnedOre`, `visualState`, `depleted`, and `hitArea`.
-- `updateVeins` only mines while active tool is Drill and `getActiveDrillAction` finds both tip overlap and input pressure toward the contacted segment.
+- Each segment stores `integrity`, `assignedYield`, `spawnedOre`, `visualState`, `depleted`, `solidBody`, `mineArea`, and compatibility `hitArea`.
+- `resolveVehicleAndToolVeinContacts` keeps the vehicle body and active tool head outside non-depleted segment `solidBody` circles.
+- `getActiveDrillAction` only mines while active tool is Drill and Drill has surface contact plus input pressure toward the contacted segment.
 - Progressive spawning uses `floor(segment.assignedYield * damageProgress)` and caps against both segment yield and vein final yield.
 - Segment auto-finish only applies to the currently drilled heavy-cracked segment at `veinFinishThreshold`.
-- `drawVeins` uses simple debug shapes, cracks, state labels, and active segment highlight; no formal art was added.
+- `drawVeins` uses simple debug shapes, mine-area rings, cracks, state labels, active segment highlight, and smaller depleted residue; no formal art was added.
 - Vein-spawned ore uses `createLooseMineral`, so it stays normal loose ore that Scoop can secure and sell.
 
 Previous P1-B implementation points:
@@ -189,6 +192,9 @@ Important implementation points in `main.js`:
   - debug overlay is drawn in screen space
 - P1-C segmented vein assertion script checked:
   - default vein has 3 segments
+  - non-depleted segments expose `solidBody` and `mineArea`
+  - vehicle body and Drill tool collision resolve out of solid segments
+  - depleted segments skip solid collision while untouched segments remain solid
   - assigned segment yields sum exactly to final yield
   - standing near the vein does not mine
   - wrong pressure direction does not mine

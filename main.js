@@ -82,6 +82,8 @@ const drillPressureThreshold = 0.42; // Required input-dot-toward-segment. Highe
 const drillIntegrityDamagePerSecond = 0.42; // Segment damage rate while pressing Drill into a segment.
 const veinFinishThreshold = 0.08; // Heavy-cracked segments at/below this can auto-finish while actively drilled.
 const veinSpawnScatterRadius = 24; // Spawn spread around a drilled segment. Higher scatters ore farther from the vein.
+const veinSolidContactTolerance = 2.5; // Drill mining surface tolerance after collision has pushed the tool out.
+const veinCollisionIterations = 3; // Repeated passes keep vehicle/tool from sinking through solid segments.
 
 const wallBounceFactor = 0.22; // Mineral bounce after hitting world walls. Lower feels heavier.
 const wallContactTolerance = 3; // Distance treated as near-wall for stuck checks.
@@ -276,7 +278,8 @@ const VEIN_DEFS = {
     centerY: 360,
     segmentSpacing: 44,
     angle: -0.18,
-    hitRadius: 27,
+    solidRadius: 25,
+    hitRadius: 30,
   },
 };
 
@@ -480,7 +483,7 @@ function createMinerals() {
 function isMineralAwayFromVeins(mineral) {
   return veins.every((vein) => {
     return vein.segments.every((segment) => {
-      const safeDistance = segment.hitArea.radius + mineral.radius + 16;
+      const safeDistance = segment.solidBody.radius + mineral.radius + 18;
       return distance(mineral.x, mineral.y, segment.x, segment.y) > safeDistance;
     });
   });
@@ -557,6 +560,8 @@ function createVeinFromDef(def) {
         spawnedOre: 0,
         visualState: "intact",
         depleted: false,
+        solidBody: { x, y, radius: def.solidRadius },
+        mineArea: { x, y, radius: def.hitRadius },
         hitArea: { x, y, radius: def.hitRadius },
       };
     }),
@@ -692,6 +697,8 @@ function updateVehicle(dt) {
   vehicle.x += movement.x * vehicle.chassis.speed * input.strength * speedMultiplier * dt;
   vehicle.y += movement.y * vehicle.chassis.speed * input.strength * speedMultiplier * dt;
   clampVehicleAndBladeToWalls(toolBoundary);
+  resolveVehicleAndToolVeinContacts(toolBoundary);
+  clampVehicleAndBladeToWalls(toolBoundary);
   vehicle.vx = (vehicle.x - previousX) / Math.max(dt, 0.001);
   vehicle.vy = (vehicle.y - previousY) / Math.max(dt, 0.001);
 
@@ -747,22 +754,22 @@ function getActiveDrillAction(input) {
 
   for (const vein of veins) {
     for (const segment of vein.segments) {
-      if (segment.depleted) continue;
-      const dx = segment.hitArea.x - drillTip.x;
-      const dy = segment.hitArea.y - drillTip.y;
-      const distanceToSegment = Math.hypot(dx, dy);
-      const overlaps = distanceToSegment <= segment.hitArea.radius + drillTip.radius;
-      if (!overlaps) continue;
+      if (!isVeinSegmentSolid(segment)) continue;
+      const surfaceContact = getDrillSegmentSurfaceContact(segment);
+      if (!surfaceContact) continue;
 
+      const dx = segment.mineArea.x - drillTip.x;
+      const dy = segment.mineArea.y - drillTip.y;
+      const distanceToSegment = Math.hypot(dx, dy);
       const directionToSegment = distanceToSegment > 0.001
         ? { x: dx / distanceToSegment, y: dy / distanceToSegment }
         : { x: vehicle.dirX, y: vehicle.dirY };
       const pressureDot = input.x * directionToSegment.x + input.y * directionToSegment.y;
       if (pressureDot < drillPressureThreshold) continue;
 
-      const score = pressureDot * 1000 - distanceToSegment;
+      const score = pressureDot * 1000 + surfaceContact.depth;
       if (!bestAction || score > bestAction.score) {
-        bestAction = { vein, segment, drillTip, pressureDot, score };
+        bestAction = { vein, segment, drillTip, pressureDot, surfaceContact, score };
       }
     }
   }
@@ -830,8 +837,16 @@ function getVeinSpawnedOre(vein) {
   return vein.segments.reduce((total, segment) => total + segment.spawnedOre, 0);
 }
 
+function isVeinSegmentSolid(segment) {
+  return !segment.depleted && segment.visualState !== "depleted";
+}
+
 function updateVeinSegmentVisualState(segment) {
-  if (segment.depleted || segment.spawnedOre >= segment.assignedYield) {
+  if (segment.spawnedOre >= segment.assignedYield) {
+    segment.depleted = true;
+  }
+
+  if (segment.depleted) {
     segment.visualState = "depleted";
   } else if (segment.integrity <= 0.34) {
     segment.visualState = "heavy_cracked";
@@ -1081,6 +1096,25 @@ function getPushOnlyToolColliders(tool) {
   return [];
 }
 
+function getCurrentToolSolidColliders(toolBoundary = getCurrentToolBoundaryConfig()) {
+  if (isScoopToolActive()) {
+    return getBladeLipColliders(getCurrentBladeConfig(), getBladeLocalStateFromToolBoundary(toolBoundary));
+  }
+
+  return getPushOnlyToolColliders(activeTool);
+}
+
+function getBladeLocalStateFromToolBoundary(toolBoundary) {
+  const bladeStart = getBladeStart();
+  const bladeEnd = bladeStart + toolBoundary.length;
+  return {
+    local: { x: 0, y: 0 },
+    bladeStart,
+    bladeEnd,
+    halfWidth: toolBoundary.width / 2,
+  };
+}
+
 function getDrillToolColliders(tool) {
   const start = getBladeStart();
   const end = start + tool.length;
@@ -1189,6 +1223,64 @@ function getToolContactFallbackNormal(collider, local) {
   }
 
   return { x: normalX, y: normalY };
+}
+
+function getDrillSegmentSurfaceContact(segment) {
+  if (!isVeinSegmentSolid(segment)) return null;
+
+  const contacts = getToolVeinSegmentContacts(TOOL_TYPES.drill, segment, veinSolidContactTolerance);
+  return contacts.find((contact) => contact.kind === "drillTip") || contacts[0] || null;
+}
+
+function getToolVeinSegmentContacts(tool, segment, tolerance = 0) {
+  const solid = segment.solidBody;
+  const local = worldToBladeLocal(solid.x, solid.y);
+  const contacts = [];
+
+  for (const collider of getPushOnlyToolColliders(tool)) {
+    const contact = collider.type === "circle"
+      ? getCircleToolContactAgainstSolid(collider, local, solid.radius, tolerance)
+      : getSegmentToolContactAgainstSolid(collider, local, solid.radius, tolerance);
+    if (contact) contacts.push(contact);
+  }
+
+  return contacts.sort((a, b) => b.depth - a.depth);
+}
+
+function getSegmentToolContactAgainstSolid(collider, solidLocal, solidRadius, tolerance = 0) {
+  const segmentX = collider.bx - collider.ax;
+  const segmentY = collider.by - collider.ay;
+  const segmentLengthSq = segmentX * segmentX + segmentY * segmentY;
+  const t = segmentLengthSq > 0.001
+    ? clamp(((solidLocal.x - collider.ax) * segmentX + (solidLocal.y - collider.ay) * segmentY) / segmentLengthSq, 0, 1)
+    : 0;
+  const closestX = collider.ax + segmentX * t;
+  const closestY = collider.ay + segmentY * t;
+  return getToolSolidContactFromClosestPoint(collider, solidLocal, solidRadius, closestX, closestY, tolerance);
+}
+
+function getCircleToolContactAgainstSolid(collider, solidLocal, solidRadius, tolerance = 0) {
+  return getToolSolidContactFromClosestPoint(collider, solidLocal, solidRadius, collider.cx, collider.cy, tolerance);
+}
+
+function getToolSolidContactFromClosestPoint(collider, solidLocal, solidRadius, closestX, closestY, tolerance = 0) {
+  const dx = solidLocal.x - closestX;
+  const dy = solidLocal.y - closestY;
+  const distanceSq = dx * dx + dy * dy;
+  const combinedRadius = solidRadius + collider.radius;
+  const allowedDistance = combinedRadius + tolerance;
+  if (distanceSq > allowedDistance * allowedDistance) return null;
+
+  const distanceBetween = Math.sqrt(distanceSq);
+  const normal = distanceBetween > 0.001
+    ? { x: dx / distanceBetween, y: dy / distanceBetween }
+    : getToolContactFallbackNormal(collider, solidLocal);
+
+  return {
+    kind: collider.kind,
+    depth: combinedRadius - distanceBetween,
+    normal,
+  };
 }
 
 function resolveBladeLipContactsForMineral(mineral, blade, dt, pushResponse, impulseBudget, allowBackPush) {
@@ -2516,7 +2608,8 @@ function drawVeins() {
 function drawVeinSegment(vein, segment) {
   const active = isActiveDrillSegment(vein, segment);
   const color = getVeinSegmentColor(segment.visualState);
-  const radius = segment.hitArea.radius;
+  const solid = segment.solidBody;
+  const radius = segment.visualState === "depleted" ? solid.radius * 0.58 : solid.radius;
 
   ctx.save();
   ctx.translate(segment.x, segment.y);
@@ -2528,6 +2621,14 @@ function drawVeinSegment(vein, segment) {
   ctx.arc(0, 0, radius, 0, Math.PI * 2);
   ctx.fill();
   ctx.stroke();
+
+  if (segment.visualState !== "depleted") {
+    ctx.strokeStyle = "rgba(244, 240, 223, 0.14)";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.arc(0, 0, segment.mineArea.radius, 0, Math.PI * 2);
+    ctx.stroke();
+  }
 
   drawVeinCracks(segment, radius, active);
 
@@ -3106,6 +3207,85 @@ function getVehicleAndBladeWallCorrection(blade) {
   }
 
   return { x, y };
+}
+
+function resolveVehicleAndToolVeinContacts(toolBoundary) {
+  const totalCorrection = { x: 0, y: 0 };
+
+  for (let iteration = 0; iteration < veinCollisionIterations; iteration += 1) {
+    const correction = resolveSingleVehicleAndToolVeinContactPass(toolBoundary);
+    totalCorrection.x += correction.x;
+    totalCorrection.y += correction.y;
+    if (Math.abs(correction.x) + Math.abs(correction.y) <= 0.001) break;
+  }
+
+  return totalCorrection;
+}
+
+function resolveSingleVehicleAndToolVeinContactPass(toolBoundary) {
+  const correction = { x: 0, y: 0 };
+
+  for (const vein of veins) {
+    for (const segment of vein.segments) {
+      if (!isVeinSegmentSolid(segment)) continue;
+
+      const bodyCorrection = resolveVehicleBodyVeinContact(segment);
+      correction.x += bodyCorrection.x;
+      correction.y += bodyCorrection.y;
+
+      const toolCorrection = resolveToolVeinContact(segment, toolBoundary);
+      correction.x += toolCorrection.x;
+      correction.y += toolCorrection.y;
+    }
+  }
+
+  return correction;
+}
+
+function resolveVehicleBodyVeinContact(segment) {
+  if (!isVeinSegmentSolid(segment)) return { x: 0, y: 0 };
+
+  const solid = segment.solidBody;
+  const dx = vehicle.x - solid.x;
+  const dy = vehicle.y - solid.y;
+  const distanceBetween = Math.hypot(dx, dy);
+  const combinedRadius = vehicle.bodyRadius + solid.radius;
+  if (distanceBetween >= combinedRadius) return { x: 0, y: 0 };
+
+  const normalX = distanceBetween > 0.001 ? dx / distanceBetween : -vehicle.dirX;
+  const normalY = distanceBetween > 0.001 ? dy / distanceBetween : -vehicle.dirY;
+  const depth = combinedRadius - distanceBetween + 0.01;
+  const x = normalX * depth;
+  const y = normalY * depth;
+  vehicle.x += x;
+  vehicle.y += y;
+  return { x, y };
+}
+
+function resolveToolVeinContact(segment, toolBoundary) {
+  if (!isVeinSegmentSolid(segment)) return { x: 0, y: 0 };
+
+  let correction = { x: 0, y: 0 };
+  const solid = segment.solidBody;
+
+  for (const collider of getCurrentToolSolidColliders(toolBoundary)) {
+    const solidLocal = worldToBladeLocal(solid.x, solid.y);
+    const contact = collider.type === "circle"
+      ? getCircleToolContactAgainstSolid(collider, solidLocal, solid.radius)
+      : getSegmentToolContactAgainstSolid(collider, solidLocal, solid.radius);
+    if (!contact || contact.depth <= 0) continue;
+
+    const normal = localToWorldVector(contact.normal.x, contact.normal.y);
+    const pushOut = Math.min(contact.depth + 0.01, maxScoopLipCorrectionPerSubstep);
+    const x = -normal.x * pushOut;
+    const y = -normal.y * pushOut;
+    vehicle.x += x;
+    vehicle.y += y;
+    correction.x += x;
+    correction.y += y;
+  }
+
+  return correction;
 }
 
 function getVehicleAndBladeWorldBounds(blade) {

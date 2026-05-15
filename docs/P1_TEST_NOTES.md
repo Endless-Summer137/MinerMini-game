@@ -103,6 +103,8 @@ Scope:
 - one default segmented test vein
 - 3 vein segments
 - per-segment integrity, assigned yield, spawned ore, visual state, and hit area
+- non-depleted segment solid bodies that block vehicle body and active tool heads
+- separate mine areas that detect Drill contact and pressure
 - Drill progressive damage and loose ore spawning
 - spawned ore enters the existing loose ore -> Scoop -> crusher loop
 
@@ -123,11 +125,14 @@ Manual checklist:
 - Switching while carrying secured ore is still blocked.
 - Drill and Hammer still push loose ore instead of passing through it.
 - Hammer remains push-only and does not mine veins.
-- Drill only damages a vein segment when the Drill tip overlaps that segment and input is pressing toward it.
+- Vehicle body cannot pass through intact, cracked, or heavy-cracked vein segments.
+- Drill is stopped at the segment surface instead of slowly passing through the vein.
+- Drill only damages a vein segment when the Drill tip has surface contact and input is pressing toward it.
 - Standing near the vein without pressure does not auto-mine.
 - Pressing away from the contacted segment does not mine.
 - The contacted segment changes visual state from intact to cracked to heavy to depleted.
 - One segment can be depleted without deleting untouched segments.
+- Depleted segment collision is skipped/cleared while other non-depleted segments remain solid.
 - Spawned ore can be scooped and sold normally.
 - Total spawned ore never exceeds the vein final yield.
 - Reverse movement and push upgrade still work.
@@ -135,7 +140,7 @@ Manual checklist:
 Validation notes:
 
 - `node --check main.js` passed for P1-C.
-- P1-C assertion script passed for 3 segments, exact assigned-yield sum, contact+pressure mining, no passive mining, no wrong-pressure mining, single-segment depletion, final-yield cap, Hammer non-mining, spawned loose ore, Scoop securing, and blocked switching while carrying secured ore.
+- P1-C follow-up assertion script passed for solid segment data, vehicle/Drill collision resolution, depleted collision skipping, surface-contact Drill mining, no passive mining, no wrong-pressure mining, single-segment depletion, final-yield cap, Hammer non-mining, spawned loose ore, Scoop securing, and blocked switching while carrying secured ore.
 - Local static server returned 200 for `index.html`.
 - Served `main.js` included `VEIN_DEFS`, `updateVeins`, `spawnProgressiveVeinOre`, and `drawVeins`.
 - In-app browser reloaded `http://127.0.0.1:8000/index.html` with no console errors.
