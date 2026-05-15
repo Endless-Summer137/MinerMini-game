@@ -4,7 +4,7 @@ Last updated: 2026-05-15
 
 ## Current Goal
 
-P1-C is a segmented ore vein and Drill progressive spawning checkpoint on top of the playable P1-A/P1-B prototype. The current follow-up centralizes vein config and reserves respawn fields without enabling real respawn. The default scoop blade should still behave like a passive solid physical scoop:
+P1-D is a Hammer burst mining plus corridor / corner test checkpoint on top of the playable P1-A/P1-B/P1-C prototype. It adds only Hammer vein interaction and a debug control test area. The default scoop blade should still behave like a passive solid physical scoop:
 
 - not magnetic
 - not one-way
@@ -32,7 +32,7 @@ P1-C is a segmented ore vein and Drill progressive spawning checkpoint on top of
   - current tool is shown as screen-fixed debug text on the canvas
   - switching is blocked while secured ore is still carried in the scoop
   - Scoop remains the only tool with ore collection, securing, delivery, and blade collision behavior
-  - Drill and Hammer use push-only solid tool-head contact against loose ore, but do not mine, damage, spawn ore, secure ore, or interact with veins
+  - Drill and Hammer use push-only solid tool-head contact against loose ore and do not secure ore or run scoop capture behavior
 - P1-C segmented ore vein prototype:
   - one default test vein has 3 segments
   - `VEIN_DEFS.testThreeSegmentVein` uses a nested config shape for placement, segment, yield, ore output, Drill, Hammer placeholder, and respawn placeholder data
@@ -45,7 +45,18 @@ P1-C is a segmented ore vein and Drill progressive spawning checkpoint on top of
   - valid Drill contact applies a bite lock that strongly damps tangential sliding along circular vein surfaces
   - `respawn: { enabled: false, respawnSeconds: null, timeSource: "none" }` is interface-only; no real respawn timing exists yet
   - damaged segments spawn normal loose ore over time, and spawned ore enters the existing Scoop -> crusher loop
-  - Hammer remains a push-only placeholder and does not mine veins
+  - Hammer config fields are available for P1-D burst behavior while respawn remains interface-only
+- P1-D Hammer burst mining and corridor / corner test:
+  - Hammer is still a push-only solid tool against loose ore, but now also damages segmented vein segments when its hit area overlaps them during active input
+  - Hammer hits use `damagePerHit`, `hitCooldown`, `hitRadius`, and `affectedSegments` from the vein Hammer config
+  - Hammer does not use Drill bite lock and does not progressively spawn ore while damaging a segment
+  - when Hammer depletes a segment, that segment's remaining assigned yield bursts into normal loose ore at once
+  - if multiple hit segments deplete in the same Hammer action, their remaining yields burst in the same frame
+  - Hammer burst spawning still caps against both `segment.assignedYield` and `vein.finalYield`
+  - Hammer burst ore uses `createLooseMineral`, stays inside map bounds, and remains collectible by Scoop
+  - `MAP_CONFIG.collisionZones` now holds four debug-only L-corridor walls for a simple control / reverse test area
+  - corridor width follows `comboWidth = max(vehicleWidth, activeToolWidth)` and `minCorridorWidth = comboWidth * 1.3`, with small extra clearance so it is not a precision-parking test
+  - vehicle/tool and loose ore collision now resolve against the debug corridor walls, with near-wall unstuck nudges extended to collision zones
 - Load-based vehicle slowdown and shake.
 - Default scoop blade with a continuous U-shaped boundary.
 - Solid two-sided scoop lip collisions:
@@ -83,23 +94,21 @@ P1-C is a segmented ore vein and Drill progressive spawning checkpoint on top of
 
 ## Latest Change
 
-Implemented the P1-C vein config migration and respawn interface audit while preserving P1-A map/camera behavior, P1-B tool switching/push-only contact, and the current P1-C Drill bite feel.
+Implemented P1-D Hammer burst mining plus the simple corridor / corner test area while preserving P1-A map/camera behavior, P1-B tool switching/push-only contact, and P1-C Drill progressive mining / bite feel.
 
 Important implementation points in `main.js`:
 
-- `VEIN_DEFS.testThreeSegmentVein` defines the default 3-segment test vein using nested `placement`, `segment`, `yield`, `oreOutput`, `drill`, `hammer`, and `respawn` config blocks.
-- `migrateVeinDef` accepts the new nested config shape and the older flat P1-C fields so prototype data can migrate without a broad rewrite.
-- `createVeinFromDef` calculates `finalYield = floor(baseYield * yieldMultiplier)` and distributes `assignedYield` exactly across segments.
-- Each segment stores `maxIntegrity`, `integrity`, `assignedYield`, `spawnedOre`, `visualState`, `depleted`, `solidBody`, `mineArea`, compatibility `hitArea`, and pointers to the active Drill/Hammer/output config.
-- `resolveVehicleAndToolVeinContacts` keeps the vehicle body and active tool head outside non-depleted segment `solidBody` circles.
-- Drill pressure threshold, damage, resistance, contact tolerance, collision passes, and bite tuning now read from vein config while preserving current values.
-- Hammer resistance/damage/radius fields are reserved in config but remain unused; Hammer is still only a push-only placeholder.
-- `getVeinRespawnConfig` exposes the respawn config shape, but no respawn timer, server time, client local time, offline reward, or respawn behavior is implemented.
-- `docs/P1_VEIN_CONFIG_NOTES.md` records the future time-source preference: server/trusted platform time first, client local only as debug/fallback.
-- Progressive spawning uses `floor(segment.assignedYield * damageProgress)` and caps against both segment yield and vein final yield.
-- Segment auto-finish only applies to the currently drilled heavy-cracked segment at `veinFinishThreshold`.
-- `drawVeins` uses simple debug shapes, mine-area rings, cracks, state labels, active segment highlight, and smaller depleted residue; no formal art was added.
-- Vein-spawned ore uses `createLooseMineral`, so it stays normal loose ore that Scoop can secure and sell.
+- `VEIN_DEFS.testThreeSegmentVein.hammer` now owns Hammer hit cooldown, damage, radius, affected-segment count, burst scatter, burst speed, and mild shake tuning.
+- `updateVeins` dispatches to Drill progressive mining or Hammer hit mining based on the active tool; Hammer never uses Drill bite lock.
+- `getActiveHammerAction` finds non-depleted vein segments overlapping the Hammer hit area and limits the hit to the configured affected segment count.
+- `applyHammerVeinHit` applies discrete Hammer damage and intentionally does not call `spawnProgressiveVeinOre`.
+- `finishVeinSegment` now accepts spawn options so Hammer can burst remaining assigned yield at once while Drill can keep its existing finish behavior.
+- `spawnVeinOre` still caps against both segment remaining yield and vein remaining yield, and Hammer burst ore remains normal loose ore.
+- `spawnHammerBurstParticles` adds small debug dust/spark feedback only; no formal VFX or sound system was added.
+- `createCorridorTestCollisionZones` builds a simple L-shaped debug corridor from `MAP_CONFIG.collisionZones`.
+- `getCorridorMinimumWidth` encodes `comboWidth = max(vehicleWidth, activeToolWidth)` and `minCorridorWidth = comboWidth * 1.3`; the actual test corridor adds a little clearance.
+- `resolveVehicleAndToolCollisionZones` and `resolveMineralCollisionZoneContacts` let the vehicle/tool probes and loose ore collide with debug corridor walls.
+- `getCollisionZoneAvoidanceVector` extends the existing near-wall unstuck nudge so loose ore is less likely to stay trapped in corridor corners.
 
 Previous P1-B implementation points:
 
@@ -219,6 +228,21 @@ Important implementation points in `main.js`:
   - Hammer does not mine veins
   - spawned vein ore can be secured by Scoop
   - switching while carrying secured ore is still blocked
+- `node --check main.js` passed for P1-D.
+- P1-D assertion script checked:
+  - corridor width is not narrower than `max(vehicleWidth, activeToolWidth) * 1.3`
+  - the debug corridor creates four `MAP_CONFIG.collisionZones` wall rectangles
+  - Hammer overlap can find a non-depleted segment hit
+  - Hammer damages segments without progressive ore spawning before depletion
+  - Hammer-depleted segments burst their remaining assigned yield at once
+  - multiple Hammer-hit segments can deplete and burst in the same hit
+  - Hammer burst ore spawns inside playable map bounds
+  - `getVeinSpawnedOre(vein)` never exceeds `vein.finalYield`
+  - each Hammer-hit segment's `spawnedOre` stays at or below `assignedYield`
+  - reset-spawned loose ore avoids the debug corridor wall zones
+- Local static server check for P1-D:
+  - `http://127.0.0.1:8000/index.html` returned 200
+  - served `main.js` includes `applyHammerVeinHit`, `createCorridorTestCollisionZones`, and `applyDrillBiteLock`
 - P1-A VM draw/update smoke test passed.
 - `node --check main.js` for P0.5 data-table refactor.
 - P0.5 assertion script checked:
@@ -282,14 +306,16 @@ Important implementation points in `main.js`:
 - P0.5 creates extension data tables, but there is still only one active ore, blade, chassis, skin, crusher, and upgrade.
 - Upgrade prerequisites are data-shaped, but there is no multi-upgrade graph validator yet.
 - P1-A is still a test map, not formal level design.
-- P1-C only adds a minimal segmented vein model and Drill progressive ore spawning; Hammer burst mining, corridor tests, vein respawn, ore rarity, and formal ore economy are not implemented yet.
+- P1-D adds only minimal Hammer burst mining and a debug corridor/corner test; vein respawn, ore rarity, formal level design, and formal economy are not implemented yet.
+- The corridor walls are debug collision zones, not a reusable blocker or level-design system.
+- Hammer burst values have assertion coverage but still need hands-on browser playtesting for impact feel, readability, and ore pile stability.
 
 ## Recommended Next Steps
 
-1. Manually playtest P1-C Drill pressure feel, segment readability, and spawned ore flow into Scoop/crusher.
+1. Manually playtest P1-D Hammer burst feel, multiple-segment burst readability, and spawned ore flow into Scoop/crusher.
 2. Add repeatable physics regression tests for scoop lip containment and map boundary clamps.
 3. Split `main.js` into modules before adding many P1/P2 content types.
-4. Tune scoop lip friction and restitution after more playtesting.
+4. Tune scoop lip friction, Hammer hit tuning, and corridor collision feel after more playtesting.
 5. Add a debug collision overlay toggle.
 6. Improve mineral pile stability under high load.
 

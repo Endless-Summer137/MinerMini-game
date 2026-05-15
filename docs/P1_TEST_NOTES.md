@@ -157,3 +157,59 @@ Validation notes:
 Related note:
 
 - `docs/P1_VEIN_CONFIG_NOTES.md`
+
+## P1-D Hammer Burst Mining And Corridor / Corner Test
+
+Scope:
+
+- Hammer hit interaction with segmented ore veins
+- one Hammer hit can damage one or more overlapping non-depleted vein segments
+- Hammer burst depletion, where remaining segment yield spawns at once
+- no Hammer progressive ore spawning during damage
+- simple debug corridor / corner test area
+- vehicle/tool and loose ore collision against the debug corridor walls
+- corridor width rule: `comboWidth = max(vehicleWidth, activeToolWidth)` and `minCorridorWidth = comboWidth * 1.3`
+
+Out of scope for P1-D:
+
+- formal level design
+- vein respawn
+- ore rarity
+- merchants, base camp, cart cargo, blockers, push-blade mechanics, formal art, formal sound, Cocos migration, or mobile platform integration
+
+Manual checklist:
+
+- Existing Scoop gameplay still pushes, secures, unloads, and pays out ore normally.
+- Camera follow and camera clamp still work.
+- Tool switching still works with `1`, `2`, and `3`.
+- Switching while carrying secured ore is still blocked.
+- Drill still progressively mines veins only with valid tip contact and pressure.
+- Drill contact lock / bite feel still helps the Drill stay on the contacted segment surface.
+- Hammer still pushes loose ore instead of passing through it.
+- Hammer damages one or more overlapping non-depleted vein segments while active.
+- Hammer does not use Drill contact lock.
+- Hammer does not progressively spawn ore while damaging a segment.
+- Hammer-depleted segments burst their remaining assigned yield at once.
+- Multiple Hammer-hit segments can burst together if they deplete in the same hit.
+- Burst ore remains inside the map and can be scooped and sold normally.
+- Total spawned ore never exceeds the vein final yield.
+- Each segment's `spawnedOre` never exceeds its `assignedYield`.
+- The debug corridor is passable without extreme alignment.
+- Reverse movement is useful for backing out of the corridor/corner.
+- Minerals do not permanently lock in corridor corners during normal play.
+- Crusher, load-ratio unload timing, push upgrade, and map boundaries still work.
+
+Validation notes:
+
+- `node --check main.js` passed for P1-D.
+- P1-D VM assertion script passed for corridor width formula, four debug corridor walls, Hammer overlap detection, no Hammer progressive spawning before depletion, single-segment Hammer burst, multi-segment same-hit burst, burst map bounds, final-yield cap, segment assigned-yield cap, and reset-spawned ore avoiding debug corridor walls.
+- Local static server returned 200 for `index.html`.
+- Served `main.js` included `applyHammerVeinHit`, `createCorridorTestCollisionZones`, and `applyDrillBiteLock`.
+
+Still needs hands-on playtest in the browser:
+
+- actual Hammer impact cadence and readability
+- whether the burst ore spread feels satisfying without scattering too far
+- whether multi-segment bursts are readable on the current debug vein art
+- whether the debug corridor/corner feels like a control test rather than precision parking
+- whether loose ore can be recovered naturally from corridor corners

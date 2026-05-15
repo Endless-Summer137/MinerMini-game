@@ -22,7 +22,7 @@ const MAP_CONFIG = {
   worldBounds: { x: 0, y: 0, width: mapWidth, height: mapHeight },
   boundaryMode: "rect", // P1-A still uses rectangular bounds; future modes can branch from this value.
   wallThickness: 24, // Visual and collision inset. Higher shrinks the playable rectangle.
-  collisionZones: [], // Reserved data hook for future rock walls or invisible zones; unused in P1-A.
+  collisionZones: [], // Filled by the P1-D debug corridor; still not a formal level or blocker system.
 };
 const cameraFollowSmoothingTime = 0.08; // Lower follows tighter; higher feels floatier. Keep low for responsive P1-A control.
 const CAMERA_CONFIG = {
@@ -89,6 +89,21 @@ const drillBiteMaxTangentialCorrection = 14; // Max per-frame anti-slide correct
 const drillBiteSurfaceBias = 0.35; // Tiny inward bias during bite so the tip keeps contact after anti-slide correction.
 const drillBiteMaxSurfaceCorrection = 6; // Caps bite surface pinning. Higher can feel sticky; lower can lose contact.
 const drillBiteShakeAmount = 0.35; // Render-only body shake while biting the vein surface.
+const hammerHitCooldown = 0.42; // Seconds between Hammer hits. Lower hits faster and can deplete veins too quickly.
+const hammerDamagePerHit = 0.55; // Integrity removed per Hammer hit before resistance. Higher means fewer hits per segment.
+const hammerHitRadius = 46; // Burst hit area around the Hammer head. Higher can affect more nearby vein segments.
+const hammerAffectedSegments = 2; // Max segments damaged by one Hammer hit. Higher makes multi-burst easier.
+const hammerBurstScatterRadius = 34; // Ore spawn spread on Hammer depletion. Higher makes the burst wider.
+const hammerBurstSpeedMin = 34; // Minimum outward burst speed; keep modest so ore remains scoopable.
+const hammerBurstSpeedMax = 78; // Maximum outward burst speed; must stay below maxMineralSpeed for stability.
+const hammerBurstShakeAmount = 0.32; // Mild body shake on Hammer impact. Visual only; does not change controls.
+const hammerBurstParticleBase = 6; // Base debug dust/spark count for Hammer burst feedback.
+const hammerTargetHighlightDuration = 0.18; // Seconds Hammer-hit segments stay highlighted after a hit.
+
+const corridorWidthMultiplier = 1.3; // P1-D rule: minCorridorWidth = max(vehicleWidth, activeToolWidth) * this.
+const corridorExtraClearance = 18; // Extra room above the minimum so the corner tests reversing, not pixel parking.
+const corridorWallThickness = 24; // Debug wall thickness for the P1-D corridor/corner test area.
+const corridorCollisionIterations = 4; // Repeated passes keep vehicle/tool probes from sinking into debug walls.
 
 const wallBounceFactor = 0.22; // Mineral bounce after hitting world walls. Lower feels heavier.
 const wallContactTolerance = 3; // Distance treated as near-wall for stuck checks.
@@ -319,9 +334,14 @@ const VEIN_DEFS = {
     },
     hammer: {
       resistance: 1,
-      damagePerHit: 0,
-      hitRadius: 0,
-      affectedSegments: 0,
+      damagePerHit: hammerDamagePerHit,
+      hitCooldown: hammerHitCooldown,
+      hitRadius: hammerHitRadius,
+      affectedSegments: hammerAffectedSegments,
+      burstScatterRadius: hammerBurstScatterRadius,
+      burstSpeedMin: hammerBurstSpeedMin,
+      burstSpeedMax: hammerBurstSpeedMax,
+      burstShakeAmount: hammerBurstShakeAmount,
     },
     respawn: {
       enabled: false,
@@ -371,6 +391,7 @@ const activeVehicleChassis = VEHICLE_CHASSIS.prototypeHauler;
 const activeVehicleSkin = VEHICLE_SKINS.orangePrototype;
 const activeCrusherType = CRUSHER_TYPES.embeddedGroundCrusher;
 const activeUpgradeDef = UPGRADE_DEFS.pushPower1;
+MAP_CONFIG.collisionZones = createCorridorTestCollisionZones();
 const canvas = document.getElementById("gameCanvas");
 const ctx = canvas.getContext("2d");
 const coinsEl = document.getElementById("coins");
@@ -464,6 +485,9 @@ let toolDebugNotice = ""; // Short screen-fixed debug feedback such as blocked s
 let toolDebugNoticeTimer = 0; // Seconds remaining before the tool debug notice disappears.
 let activeDrillTarget = null; // Current drilled segment for visual highlight; null when Drill pressure is not applied.
 let activeDrillBite = null; // Current Drill surface lock. Exists only during valid contact + pressure.
+let activeHammerTargets = []; // Recent Hammer-hit segments for short debug highlighting.
+let hammerTargetHighlightTimer = 0; // Seconds remaining for Hammer segment highlights.
+let hammerHitCooldownTimer = 0; // Prevents Hammer overlap from applying damage every frame.
 let lastControlInput = { active: false, x: 0, y: -1, strength: 0 }; // Cached input for Drill pressure checks after movement.
 
 function resetGame() {
@@ -487,6 +511,9 @@ function resetGame() {
   toolDebugNoticeTimer = 0;
   activeDrillTarget = null;
   activeDrillBite = null;
+  activeHammerTargets = [];
+  hammerTargetHighlightTimer = 0;
+  hammerHitCooldownTimer = 0;
   lastControlInput = { active: false, x: vehicle.dirX, y: vehicle.dirY, strength: 0 };
   coins = 0;
   collected = 0;
@@ -521,8 +548,9 @@ function createMinerals() {
     const awayFromVehicle = distance(mineral.x, mineral.y, vehicle.x, vehicle.y) > 56;
     const awayFromMinerals = spawned.every((other) => distance(mineral.x, mineral.y, other.x, other.y) > mineral.radius * 2.6);
     const awayFromVeins = isMineralAwayFromVeins(mineral);
+    const awayFromCollisionZones = isMineralAwayFromCollisionZones(mineral);
 
-    if (awayFromVehicle && awayFromMinerals && awayFromVeins) {
+    if (awayFromVehicle && awayFromMinerals && awayFromVeins && awayFromCollisionZones) {
       spawned.push(mineral);
     }
   }
@@ -537,6 +565,10 @@ function isMineralAwayFromVeins(mineral) {
       return distance(mineral.x, mineral.y, segment.x, segment.y) > safeDistance;
     });
   });
+}
+
+function isMineralAwayFromCollisionZones(mineral) {
+  return world.collisionZones.every((zone) => !getCircleRectContact(mineral, zone, 4));
 }
 
 function createLooseMineral(x, y, oreType = DEFAULT_ORE_TYPE) {
@@ -684,9 +716,14 @@ function migrateVeinDef(def) {
     },
     hammer: {
       resistance: def.hammer?.resistance ?? def.hammerResistance ?? 1,
-      damagePerHit: def.hammer?.damagePerHit ?? def.hammerDamagePerHit ?? 0,
-      hitRadius: def.hammer?.hitRadius ?? def.hammerHitRadius ?? 0,
-      affectedSegments: def.hammer?.affectedSegments ?? def.affectedSegments ?? 0,
+      damagePerHit: def.hammer?.damagePerHit ?? def.hammerDamagePerHit ?? hammerDamagePerHit,
+      hitCooldown: def.hammer?.hitCooldown ?? def.hammerHitCooldown ?? hammerHitCooldown,
+      hitRadius: def.hammer?.hitRadius ?? def.hammerHitRadius ?? hammerHitRadius,
+      affectedSegments: def.hammer?.affectedSegments ?? def.affectedSegments ?? hammerAffectedSegments,
+      burstScatterRadius: def.hammer?.burstScatterRadius ?? def.hammerBurstScatterRadius ?? hammerBurstScatterRadius,
+      burstSpeedMin: def.hammer?.burstSpeedMin ?? def.hammerBurstSpeedMin ?? hammerBurstSpeedMin,
+      burstSpeedMax: def.hammer?.burstSpeedMax ?? def.hammerBurstSpeedMax ?? hammerBurstSpeedMax,
+      burstShakeAmount: def.hammer?.burstShakeAmount ?? def.hammerBurstShakeAmount ?? hammerBurstShakeAmount,
     },
     respawn: {
       enabled: def.respawn?.enabled ?? false,
@@ -802,6 +839,84 @@ function getPlayableBounds(radius = 0) {
   };
 }
 
+function createCorridorTestCollisionZones() {
+  const corridorWidth = getCorridorTestWidth();
+  const passageX = 428;
+  const startY = 610;
+  const turnY = 770;
+  const horizontalLength = 210;
+  const wall = corridorWallThickness;
+
+  // P1-D debug-only L corridor: open at the top and right so it checks
+  // steering/reverse recovery without becoming a formal obstacle layout.
+  return [
+    {
+      id: "p1d-corridor-left-wall",
+      kind: "debugCorridorWall",
+      x: passageX - wall,
+      y: startY,
+      width: wall,
+      height: turnY + corridorWidth - startY,
+    },
+    {
+      id: "p1d-corridor-right-wall",
+      kind: "debugCorridorWall",
+      x: passageX + corridorWidth,
+      y: startY,
+      width: wall,
+      height: turnY - startY,
+    },
+    {
+      id: "p1d-corridor-top-turn-wall",
+      kind: "debugCorridorWall",
+      x: passageX + corridorWidth,
+      y: turnY - wall,
+      width: horizontalLength,
+      height: wall,
+    },
+    {
+      id: "p1d-corridor-bottom-wall",
+      kind: "debugCorridorWall",
+      x: passageX,
+      y: turnY + corridorWidth,
+      width: corridorWidth + horizontalLength,
+      height: wall,
+    },
+  ];
+}
+
+function getCorridorTestWidth() {
+  const minCorridorWidth = getCorridorMinimumWidth(getMaxCorridorToolWidth());
+  return Math.ceil(minCorridorWidth + corridorExtraClearance);
+}
+
+function getCorridorMinimumWidth(activeToolWidth = getCorridorToolWidth(activeTool)) {
+  const vehicleWidth = getCorridorVehicleWidth();
+  const comboWidth = Math.max(vehicleWidth, activeToolWidth);
+  return comboWidth * corridorWidthMultiplier;
+}
+
+function getCorridorVehicleWidth() {
+  return activeVehicleChassis.radius * 2;
+}
+
+function getMaxCorridorToolWidth() {
+  return Math.max(
+    getCorridorToolWidth(TOOL_TYPES.scoop),
+    getCorridorToolWidth(TOOL_TYPES.drill),
+    getCorridorToolWidth(TOOL_TYPES.hammer)
+  );
+}
+
+function getCorridorToolWidth(tool) {
+  if (tool.id === "scoop") {
+    const blade = tool.bladeType;
+    return blade.width + upgradedBladeWidthBonus + blade.lipCollision.sideLipThickness;
+  }
+
+  return tool.width + (tool.boundaryThickness || 0);
+}
+
 function getWorldCenterX() {
   const bounds = getWorldBounds();
   return bounds.x + bounds.width / 2;
@@ -841,9 +956,11 @@ function updateVehicle(dt) {
   vehicle.x += movement.x * vehicle.chassis.speed * input.strength * speedMultiplier * dt;
   vehicle.y += movement.y * vehicle.chassis.speed * input.strength * speedMultiplier * dt;
   clampVehicleAndBladeToWalls(toolBoundary);
+  resolveVehicleAndToolCollisionZones(toolBoundary);
   resolveVehicleAndToolVeinContacts(toolBoundary);
   applyDrillBiteLock(input, previousX, previousY, toolBoundary);
   clampVehicleAndBladeToWalls(toolBoundary);
+  resolveVehicleAndToolCollisionZones(toolBoundary);
   vehicle.vx = (vehicle.x - previousX) / Math.max(dt, 0.001);
   vehicle.vy = (vehicle.y - previousY) / Math.max(dt, 0.001);
 
@@ -875,6 +992,17 @@ function getVehicleMovementIntent(input) {
 
 function updateVeins(dt) {
   activeDrillTarget = null;
+  updateHammerTargetHighlight(dt);
+  hammerHitCooldownTimer = Math.max(0, hammerHitCooldownTimer - dt);
+
+  if (isDrillToolActive()) {
+    updateDrillVeinMining(dt);
+  } else if (isHammerToolActive()) {
+    updateHammerVeinMining(dt);
+  }
+}
+
+function updateDrillVeinMining(dt) {
   if (!isDrillToolActive()) return;
 
   const drillAction = getActiveDrillAction(lastControlInput);
@@ -891,6 +1019,112 @@ function updateVeins(dt) {
   if (canAutoFinishVeinSegment(segment)) {
     finishVeinSegment(vein, segment);
   }
+}
+
+function updateHammerTargetHighlight(dt) {
+  if (hammerTargetHighlightTimer <= 0) {
+    activeHammerTargets = [];
+    return;
+  }
+
+  hammerTargetHighlightTimer = Math.max(0, hammerTargetHighlightTimer - dt);
+  if (hammerTargetHighlightTimer <= 0) activeHammerTargets = [];
+}
+
+function updateHammerVeinMining() {
+  if (hammerHitCooldownTimer > 0) return;
+
+  const hammerAction = getActiveHammerAction(lastControlInput);
+  if (!hammerAction) return;
+
+  const result = applyHammerVeinHit(hammerAction, lastControlInput);
+  if (result.hitCount <= 0) return;
+
+  hammerHitCooldownTimer = hammerAction.hitCooldown;
+  activeHammerTargets = result.targets;
+  hammerTargetHighlightTimer = hammerTargetHighlightDuration;
+  vehicle.overloadShake = Math.max(vehicle.overloadShake, hammerAction.burstShakeAmount * lastControlInput.strength);
+
+  const notice = result.burstOre > 0 ? `Hammer burst +${result.burstOre}` : `Hammer hit ${result.hitCount}`;
+  showToolDebugNotice(notice, 0.35);
+}
+
+function getActiveHammerAction(input) {
+  if (!input.active || input.strength <= 0 || !isHammerToolActive()) return null;
+
+  const hitArea = getHammerHitAreaWorldPosition(activeTool);
+  const hits = [];
+
+  for (const vein of veins) {
+    for (const segment of vein.segments) {
+      if (!isVeinSegmentSolid(segment)) continue;
+
+      const hammerConfig = getSegmentHammerConfig(segment);
+      const dx = segment.solidBody.x - hitArea.x;
+      const dy = segment.solidBody.y - hitArea.y;
+      const distanceToSegment = Math.hypot(dx, dy);
+      const hitRadius = hammerConfig.hitRadius ?? hammerHitRadius;
+      const overlapDistance = hitRadius + segment.solidBody.radius;
+      if (distanceToSegment > overlapDistance) continue;
+
+      hits.push({
+        vein,
+        segment,
+        hammerConfig,
+        distanceToSegment,
+        overlapDepth: overlapDistance - distanceToSegment,
+      });
+    }
+  }
+
+  if (hits.length === 0) return null;
+
+  hits.sort((a, b) => {
+    const overlapDiff = b.overlapDepth - a.overlapDepth;
+    if (Math.abs(overlapDiff) > 0.001) return overlapDiff;
+    return a.distanceToSegment - b.distanceToSegment;
+  });
+
+  const primaryConfig = hits[0].hammerConfig;
+  const affectedCount = Math.max(1, primaryConfig.affectedSegments || hammerAffectedSegments);
+  return {
+    hits: hits.slice(0, affectedCount),
+    hitCooldown: primaryConfig.hitCooldown ?? hammerHitCooldown,
+    burstShakeAmount: primaryConfig.burstShakeAmount ?? hammerBurstShakeAmount,
+  };
+}
+
+function applyHammerVeinHit(action, input) {
+  const depletedHits = [];
+  const targets = [];
+  let burstOre = 0;
+
+  for (const hit of action.hits) {
+    const { vein, segment, hammerConfig } = hit;
+    const damage = (hammerConfig.damagePerHit ?? hammerDamagePerHit) / Math.max(hammerConfig.resistance || 1, 0.001);
+    segment.integrity = clamp(segment.integrity - damage * input.strength, 0, segment.maxIntegrity);
+    updateVeinSegmentVisualState(segment);
+    targets.push({ veinId: vein.id, segmentId: segment.id });
+
+    if (segment.integrity <= 0 && !segment.depleted) {
+      depletedHits.push(hit);
+    }
+  }
+
+  // Hammer does not progressively spawn ore. Segments that reach zero in this
+  // single hit release their remaining assigned yield together as one burst.
+  for (const hit of depletedHits) {
+    const spawned = finishVeinSegment(hit.vein, hit.segment, {
+      burst: true,
+      scatterRadius: hit.hammerConfig.burstScatterRadius ?? hammerBurstScatterRadius,
+      speedMin: hit.hammerConfig.burstSpeedMin ?? hammerBurstSpeedMin,
+      speedMax: hit.hammerConfig.burstSpeedMax ?? hammerBurstSpeedMax,
+    });
+    burstOre += spawned;
+    spawnHammerBurstParticles(hit.segment, hit.hammerConfig, spawned);
+  }
+
+  return { hitCount: action.hits.length, burstOre, targets };
 }
 
 function getActiveDrillAction(input) {
@@ -1011,14 +1245,15 @@ function canAutoFinishVeinSegment(segment) {
   return getVeinSegmentIntegrityRatio(segment) <= segment.finishThreshold && segment.visualState === "heavy_cracked";
 }
 
-function finishVeinSegment(vein, segment) {
-  spawnVeinOre(vein, segment, segment.assignedYield - segment.spawnedOre);
+function finishVeinSegment(vein, segment, spawnOptions = {}) {
+  const spawned = spawnVeinOre(vein, segment, segment.assignedYield - segment.spawnedOre, spawnOptions);
   segment.integrity = 0;
   segment.depleted = true;
   updateVeinSegmentVisualState(segment);
+  return spawned;
 }
 
-function spawnVeinOre(vein, segment, requestedCount) {
+function spawnVeinOre(vein, segment, requestedCount, spawnOptions = {}) {
   const segmentRemaining = Math.max(0, segment.assignedYield - segment.spawnedOre);
   const veinRemaining = Math.max(0, vein.finalYield - getVeinSpawnedOre(vein));
   const spawnCount = Math.min(requestedCount, segmentRemaining, veinRemaining);
@@ -1026,13 +1261,14 @@ function spawnVeinOre(vein, segment, requestedCount) {
 
   for (let i = 0; i < spawnCount; i += 1) {
     const oreType = pickVeinOreType(vein);
-    const position = getVeinOreSpawnPosition(segment, oreType.radius);
+    const position = getVeinOreSpawnPosition(segment, oreType.radius, spawnOptions);
     const mineral = createLooseMineral(position.x, position.y, oreType);
+    const velocity = getVeinOreSpawnVelocity(position, oreType.radius, spawnOptions);
     mineral.sourceVeinId = vein.id;
     mineral.sourceSegmentId = segment.id;
-    mineral.shake = 0.18;
-    mineral.vx = position.outwardX * random(12, 30) + random(-8, 8);
-    mineral.vy = position.outwardY * random(12, 30) + random(-8, 8);
+    mineral.shake = spawnOptions.burst ? 0.32 : 0.18;
+    mineral.vx = velocity.x;
+    mineral.vy = velocity.y;
     minerals.push(mineral);
   }
 
@@ -1041,9 +1277,10 @@ function spawnVeinOre(vein, segment, requestedCount) {
   return spawnCount;
 }
 
-function getVeinOreSpawnPosition(segment, mineralRadius) {
+function getVeinOreSpawnPosition(segment, mineralRadius, spawnOptions = {}) {
   const angle = random(0, Math.PI * 2);
-  const distanceFromCenter = segment.hitArea.radius + mineralRadius + random(2, segment.oreOutput.spawnScatterRadius);
+  const scatterRadius = spawnOptions.scatterRadius ?? segment.oreOutput.spawnScatterRadius;
+  const distanceFromCenter = segment.hitArea.radius + mineralRadius + random(2, scatterRadius);
   const outwardX = Math.cos(angle);
   const outwardY = Math.sin(angle);
   const bounds = getPlayableBounds(mineralRadius);
@@ -1054,6 +1291,26 @@ function getVeinOreSpawnPosition(segment, mineralRadius) {
     outwardX,
     outwardY,
   };
+}
+
+function getVeinOreSpawnVelocity(position, mineralRadius, spawnOptions = {}) {
+  const burst = Boolean(spawnOptions.burst);
+  const speedMin = burst ? (spawnOptions.speedMin ?? hammerBurstSpeedMin) : 12;
+  const speedMax = burst ? (spawnOptions.speedMax ?? hammerBurstSpeedMax) : 30;
+  const speed = random(speedMin, speedMax);
+  let x = position.outwardX * speed + random(-8, 8);
+  let y = position.outwardY * speed + random(-8, 8);
+  const capped = capVector(x, y, maxMineralSpeed * (burst ? 0.86 : 0.55));
+  x = capped.x;
+  y = capped.y;
+
+  const bounds = getPlayableBounds(mineralRadius);
+  if (position.x <= bounds.minX + 1 && x < 0) x = Math.abs(x);
+  if (position.x >= bounds.maxX - 1 && x > 0) x = -Math.abs(x);
+  if (position.y <= bounds.minY + 1 && y < 0) y = Math.abs(y);
+  if (position.y >= bounds.maxY - 1 && y > 0) y = -Math.abs(y);
+
+  return { x, y };
 }
 
 function getVeinSpawnedOre(vein) {
@@ -1101,6 +1358,24 @@ function getDefaultVeinDrillConfig() {
     biteSurfaceBias: drillBiteSurfaceBias,
     biteMaxSurfaceCorrection: drillBiteMaxSurfaceCorrection,
     biteShakeAmount: drillBiteShakeAmount,
+  };
+}
+
+function getSegmentHammerConfig(segment) {
+  return segment.hammer || getDefaultVeinHammerConfig();
+}
+
+function getDefaultVeinHammerConfig() {
+  return {
+    resistance: 1,
+    damagePerHit: hammerDamagePerHit,
+    hitCooldown: hammerHitCooldown,
+    hitRadius: hammerHitRadius,
+    affectedSegments: hammerAffectedSegments,
+    burstScatterRadius: hammerBurstScatterRadius,
+    burstSpeedMin: hammerBurstSpeedMin,
+    burstSpeedMax: hammerBurstSpeedMax,
+    burstShakeAmount: hammerBurstShakeAmount,
   };
 }
 
@@ -1862,6 +2137,10 @@ function isDrillToolActive() {
   return activeTool.id === "drill";
 }
 
+function isHammerToolActive() {
+  return activeTool.id === "hammer";
+}
+
 function isPushOnlyToolActive() {
   return activeTool.behaviorType === "pushOnly";
 }
@@ -1869,6 +2148,14 @@ function isPushOnlyToolActive() {
 function getDrillTipWorldPosition() {
   const tip = getDrillTipColliderWorldPosition(TOOL_TYPES.drill);
   return { x: tip.x, y: tip.y, radius: drillTipContactRadius };
+}
+
+function getHammerHitAreaWorldPosition(tool = TOOL_TYPES.hammer) {
+  const headCollider = getHammerToolColliders(tool).find((collider) => collider.kind === "hammerHead");
+  const localX = (headCollider.ax + headCollider.bx) / 2;
+  const localY = (headCollider.ay + headCollider.by) / 2;
+  const position = bladeLocalToWorld(localX, localY);
+  return { x: position.x, y: position.y, radius: hammerHitRadius };
 }
 
 function getCurrentToolBoundaryConfig(blade = getCurrentBladeConfig()) {
@@ -2428,6 +2715,8 @@ function resolveWallContact(mineral) {
   } else if (mineral.y >= bounds.maxY - wallContactTolerance && mineral.vy > 0) {
     mineral.vy = -mineral.vy * wallBounceFactor;
   }
+
+  resolveMineralCollisionZoneContacts(mineral);
 }
 
 function applyStuckCorrection(mineral, dt) {
@@ -2458,6 +2747,10 @@ function getWallInwardVector(mineral) {
   if (mineral.x >= bounds.maxX - nearDistance) x -= 1;
   if (mineral.y <= bounds.minY + nearDistance) y += 1;
   if (mineral.y >= bounds.maxY - nearDistance) y -= 1;
+
+  const zoneVector = getCollisionZoneAvoidanceVector(mineral, nearDistance);
+  x += zoneVector.x;
+  y += zoneVector.y;
 
   return { x, y };
 }
@@ -2503,6 +2796,28 @@ function resolveMineralContacts() {
   for (const mineral of minerals) {
     if (!isPhysicalOre(mineral)) continue;
     capMineralSpeed(mineral, maxMineralSpeed);
+  }
+}
+
+function spawnHammerBurstParticles(segment, hammerConfig, oreCount) {
+  const count = clamp(hammerBurstParticleBase + oreCount * 2, 6, 20);
+  const radius = hammerConfig.burstScatterRadius ?? hammerBurstScatterRadius;
+
+  for (let i = 0; i < count; i += 1) {
+    const angle = random(0, Math.PI * 2);
+    const speed = random(28, 86);
+    particles.push({
+      kind: i % 3 === 0 ? "spark" : "oreDust",
+      x: segment.x + Math.cos(angle) * random(4, radius * 0.45),
+      y: segment.y + Math.sin(angle) * random(4, radius * 0.45),
+      vx: Math.cos(angle) * speed,
+      vy: Math.sin(angle) * speed,
+      radius: random(2, 4),
+      life: random(0.18, 0.34),
+      age: 0,
+      color: i % 3 === 0 ? "#f0c46b" : DEFAULT_ORE_TYPE.dustColor,
+      space: "world",
+    });
   }
 }
 
@@ -2847,6 +3162,18 @@ function drawGround() {
     ctx.lineTo(playableBounds.maxX, y);
     ctx.stroke();
   }
+
+  drawCollisionZones();
+}
+
+function drawCollisionZones() {
+  for (const zone of world.collisionZones) {
+    ctx.fillStyle = "rgba(24, 32, 35, 0.86)";
+    ctx.strokeStyle = "rgba(240, 196, 107, 0.28)";
+    ctx.lineWidth = 2;
+    ctx.fillRect(zone.x, zone.y, zone.width, zone.height);
+    ctx.strokeRect(zone.x, zone.y, zone.width, zone.height);
+  }
 }
 
 function drawVeins() {
@@ -2895,7 +3222,7 @@ function drawDrillBiteIndicator() {
 }
 
 function drawVeinSegment(vein, segment) {
-  const active = isActiveDrillSegment(vein, segment);
+  const active = isActiveVeinSegment(vein, segment);
   const color = getVeinSegmentColor(segment.visualState);
   const solid = segment.solidBody;
   const radius = segment.visualState === "depleted" ? solid.radius * 0.58 : solid.radius;
@@ -2974,8 +3301,12 @@ function getVeinSegmentLabel(segment) {
   return segment.visualState;
 }
 
-function isActiveDrillSegment(vein, segment) {
-  return activeDrillTarget && activeDrillTarget.veinId === vein.id && activeDrillTarget.segmentId === segment.id;
+function isActiveVeinSegment(vein, segment) {
+  if (activeDrillTarget && activeDrillTarget.veinId === vein.id && activeDrillTarget.segmentId === segment.id) {
+    return true;
+  }
+
+  return activeHammerTargets.some((target) => target.veinId === vein.id && target.segmentId === segment.id);
 }
 
 function drawCrusher() {
@@ -3497,6 +3828,137 @@ function getVehicleAndBladeWallCorrection(blade) {
   }
 
   return { x, y };
+}
+
+function resolveVehicleAndToolCollisionZones(toolBoundary) {
+  const totalCorrection = { x: 0, y: 0 };
+
+  for (let iteration = 0; iteration < corridorCollisionIterations; iteration += 1) {
+    const correction = resolveSingleVehicleAndToolZoneContactPass(toolBoundary);
+    totalCorrection.x += correction.x;
+    totalCorrection.y += correction.y;
+    if (Math.abs(correction.x) + Math.abs(correction.y) <= 0.001) break;
+  }
+
+  return totalCorrection;
+}
+
+function resolveSingleVehicleAndToolZoneContactPass(toolBoundary) {
+  const correction = { x: 0, y: 0 };
+
+  for (const probe of getVehicleAndToolWallProbeCircles(toolBoundary)) {
+    for (const zone of world.collisionZones) {
+      const contact = getCircleRectContact(probe, zone);
+      if (!contact) continue;
+
+      vehicle.x += contact.x;
+      vehicle.y += contact.y;
+      correction.x += contact.x;
+      correction.y += contact.y;
+    }
+  }
+
+  return correction;
+}
+
+function getVehicleAndToolWallProbeCircles(toolBoundary) {
+  const probes = [{ x: vehicle.x, y: vehicle.y, radius: vehicle.bodyRadius }];
+
+  for (const collider of getCurrentToolSolidColliders(toolBoundary)) {
+    if (collider.type === "circle") {
+      const point = bladeLocalToWorld(collider.cx, collider.cy);
+      probes.push({ x: point.x, y: point.y, radius: collider.radius });
+    } else {
+      addSegmentWallProbeCircles(probes, collider);
+    }
+  }
+
+  return probes;
+}
+
+function addSegmentWallProbeCircles(probes, collider) {
+  const points = [
+    { x: collider.ax, y: collider.ay },
+    { x: (collider.ax + collider.bx) / 2, y: (collider.ay + collider.by) / 2 },
+    { x: collider.bx, y: collider.by },
+  ];
+
+  for (const point of points) {
+    const worldPoint = bladeLocalToWorld(point.x, point.y);
+    probes.push({ x: worldPoint.x, y: worldPoint.y, radius: collider.radius });
+  }
+}
+
+function resolveMineralCollisionZoneContacts(mineral) {
+  for (const zone of world.collisionZones) {
+    const contact = getCircleRectContact(mineral, zone);
+    if (!contact) continue;
+
+    mineral.x += contact.x;
+    mineral.y += contact.y;
+    const normalSpeed = mineral.vx * contact.normalX + mineral.vy * contact.normalY;
+    if (normalSpeed < 0) {
+      mineral.vx -= (1 + wallBounceFactor) * normalSpeed * contact.normalX;
+      mineral.vy -= (1 + wallBounceFactor) * normalSpeed * contact.normalY;
+    }
+  }
+}
+
+function getCollisionZoneAvoidanceVector(mineral, nearDistance) {
+  let x = 0;
+  let y = 0;
+
+  for (const zone of world.collisionZones) {
+    const contact = getCircleRectContact(mineral, zone, nearDistance);
+    if (!contact) continue;
+    x += contact.normalX;
+    y += contact.normalY;
+  }
+
+  return { x, y };
+}
+
+function getCircleRectContact(circle, rect, tolerance = 0) {
+  const minX = rect.x;
+  const maxX = rect.x + rect.width;
+  const minY = rect.y;
+  const maxY = rect.y + rect.height;
+  const closestX = clamp(circle.x, minX, maxX);
+  const closestY = clamp(circle.y, minY, maxY);
+  const dx = circle.x - closestX;
+  const dy = circle.y - closestY;
+  const radius = circle.radius + tolerance;
+  const inside = circle.x >= minX && circle.x <= maxX && circle.y >= minY && circle.y <= maxY;
+
+  if (inside) {
+    const left = circle.x - minX;
+    const right = maxX - circle.x;
+    const top = circle.y - minY;
+    const bottom = maxY - circle.y;
+    const nearest = Math.min(left, right, top, bottom);
+    if (nearest === left) return makeRectContact(-1, 0, circle.radius + left);
+    if (nearest === right) return makeRectContact(1, 0, circle.radius + right);
+    if (nearest === top) return makeRectContact(0, -1, circle.radius + top);
+    return makeRectContact(0, 1, circle.radius + bottom);
+  }
+
+  const distanceSq = dx * dx + dy * dy;
+  if (distanceSq >= radius * radius) return null;
+
+  const distanceBetween = Math.sqrt(distanceSq);
+  if (distanceBetween <= 0.001) return null;
+  const depth = radius - distanceBetween;
+  return makeRectContact(dx / distanceBetween, dy / distanceBetween, depth);
+}
+
+function makeRectContact(normalX, normalY, depth) {
+  return {
+    normalX,
+    normalY,
+    depth,
+    x: normalX * depth,
+    y: normalY * depth,
+  };
 }
 
 function resolveVehicleAndToolVeinContacts(toolBoundary) {
