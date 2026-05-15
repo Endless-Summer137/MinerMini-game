@@ -163,9 +163,10 @@ Related note:
 Scope:
 
 - Hammer hit interaction with segmented ore veins
-- one Hammer hit can damage one or more overlapping non-depleted vein segments
+- one Hammer contact-entry impact can damage one or more physically contacted non-depleted vein segments
 - Hammer burst depletion, where remaining segment yield spawns at once
 - no Hammer progressive ore spawning during damage
+- no repeated Hammer damage while the Hammer stays on or slides along a vein
 - simple debug corridor / corner test area
 - vehicle/tool and loose ore collision against the debug corridor walls
 - corridor width rule: `comboWidth = max(vehicleWidth, activeToolWidth)` and `minCorridorWidth = comboWidth * 1.3`
@@ -186,7 +187,11 @@ Manual checklist:
 - Drill still progressively mines veins only with valid tip contact and pressure.
 - Drill contact lock / bite feel still helps the Drill stay on the contacted segment surface.
 - Hammer still pushes loose ore instead of passing through it.
-- Hammer damages one or more overlapping non-depleted vein segments while active.
+- Hammer does not damage veins from a distance.
+- Hammer contact entry applies one hit to one or more physically contacted non-depleted vein segments.
+- Staying on the vein does not repeatedly damage it.
+- Sliding along the vein does not repeatedly damage it.
+- Leaving contact and contacting again applies another Hammer hit.
 - Hammer does not use Drill contact lock.
 - Hammer does not progressively spawn ore while damaging a segment.
 - Hammer-depleted segments burst their remaining assigned yield at once.
@@ -202,13 +207,13 @@ Manual checklist:
 Validation notes:
 
 - `node --check main.js` passed for P1-D.
-- P1-D VM assertion script passed for corridor width formula, four debug corridor walls, Hammer overlap detection, no Hammer progressive spawning before depletion, single-segment Hammer burst, multi-segment same-hit burst, burst map bounds, final-yield cap, segment assigned-yield cap, and reset-spawned ore avoiding debug corridor walls.
+- P1-D contact-entry VM assertion script passed for corridor width formula, four debug corridor walls, no Hammer distance damage, one hit on contact entry, no repeated damage while staying in contact, no repeated damage while sliding in contact, another hit after leaving and recontacting, multi-segment same-impact burst, no Hammer progressive spawning before depletion, final-yield cap, segment assigned-yield cap, Drill progressive mining smoke, and reset-spawned ore avoiding debug corridor walls.
 - Local static server returned 200 for `index.html`.
-- Served `main.js` included `applyHammerVeinHit`, `createCorridorTestCollisionZones`, and `applyDrillBiteLock`.
+- Served `main.js` included `getActiveHammerContactAction`, `hammerInVeinContact`, `applyHammerVeinHit`, `createCorridorTestCollisionZones`, and `applyDrillBiteLock`.
 
 Still needs hands-on playtest in the browser:
 
-- actual Hammer impact cadence and readability
+- actual Hammer contact-entry impact feel and readability
 - whether the burst ore spread feels satisfying without scattering too far
 - whether multi-segment bursts are readable on the current debug vein art
 - whether the debug corridor/corner feels like a control test rather than precision parking

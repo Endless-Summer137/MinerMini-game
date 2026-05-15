@@ -47,8 +47,10 @@ P1-D is a Hammer burst mining plus corridor / corner test checkpoint on top of t
   - damaged segments spawn normal loose ore over time, and spawned ore enters the existing Scoop -> crusher loop
   - Hammer config fields are available for P1-D burst behavior while respawn remains interface-only
 - P1-D Hammer burst mining and corridor / corner test:
-  - Hammer is still a push-only solid tool against loose ore, but now also damages segmented vein segments when its hit area overlaps them during active input
-  - Hammer hits use `damagePerHit`, `hitCooldown`, `hitRadius`, and `affectedSegments` from the vein Hammer config
+  - Hammer is still a push-only solid tool against loose ore, but now damages segmented vein segments only when the Hammer head collider enters physical contact
+  - Hammer hits use `damagePerHit`, `contactSkin`, and `affectedSegments` from the vein Hammer config
+  - Hammer tracks `hammerInVeinContact`, so staying on a segment or sliding along it does not repeat damage
+  - Hammer can hit again only after the Hammer head fully leaves non-depleted vein contact and then contacts again
   - Hammer does not use Drill bite lock and does not progressively spawn ore while damaging a segment
   - when Hammer depletes a segment, that segment's remaining assigned yield bursts into normal loose ore at once
   - if multiple hit segments deplete in the same Hammer action, their remaining yields burst in the same frame
@@ -94,14 +96,15 @@ P1-D is a Hammer burst mining plus corridor / corner test checkpoint on top of t
 
 ## Latest Change
 
-Implemented P1-D Hammer burst mining plus the simple corridor / corner test area while preserving P1-A map/camera behavior, P1-B tool switching/push-only contact, and P1-C Drill progressive mining / bite feel.
+Implemented the P1-D follow-up that changes Hammer vein damage from range-style overlap damage to contact-entry impact damage, while preserving Hammer burst mining, the simple corridor / corner test area, P1-C Drill progressive mining, and Drill bite feel.
 
 Important implementation points in `main.js`:
 
-- `VEIN_DEFS.testThreeSegmentVein.hammer` now owns Hammer hit cooldown, damage, radius, affected-segment count, burst scatter, burst speed, and mild shake tuning.
-- `updateVeins` dispatches to Drill progressive mining or Hammer hit mining based on the active tool; Hammer never uses Drill bite lock.
-- `getActiveHammerAction` finds non-depleted vein segments overlapping the Hammer hit area and limits the hit to the configured affected segment count.
-- `applyHammerVeinHit` applies discrete Hammer damage and intentionally does not call `spawnProgressiveVeinOre`.
+- `VEIN_DEFS.testThreeSegmentVein.hammer` now owns Hammer contact skin, damage, affected-segment count, burst scatter, burst speed, and mild shake tuning.
+- `updateVeins` dispatches to Drill progressive mining or Hammer contact-entry mining based on the active tool; Hammer never uses Drill bite lock.
+- `getActiveHammerContactAction` finds non-depleted vein segments physically touched by the Hammer head collider and limits the hit to the configured affected segment count.
+- `hammerInVeinContact` and `hammerContactReleaseTimer` prevent repeated damage while the Hammer stays on or slides along a vein surface.
+- `applyHammerVeinHit` applies one discrete Hammer impact and intentionally does not call `spawnProgressiveVeinOre`.
 - `finishVeinSegment` now accepts spawn options so Hammer can burst remaining assigned yield at once while Drill can keep its existing finish behavior.
 - `spawnVeinOre` still caps against both segment remaining yield and vein remaining yield, and Hammer burst ore remains normal loose ore.
 - `spawnHammerBurstParticles` adds small debug dust/spark feedback only; no formal VFX or sound system was added.
@@ -232,17 +235,23 @@ Important implementation points in `main.js`:
 - P1-D assertion script checked:
   - corridor width is not narrower than `max(vehicleWidth, activeToolWidth) * 1.3`
   - the debug corridor creates four `MAP_CONFIG.collisionZones` wall rectangles
-  - Hammer overlap can find a non-depleted segment hit
+  - Hammer does not damage segments from outside physical head contact
+  - Hammer contact entry applies one impact hit
+  - staying in contact does not repeatedly damage the segment
+  - sliding along the segment does not repeatedly damage it
+  - leaving contact and contacting again applies another hit
+  - multiple physically contacted segments can be hit once per impact
   - Hammer damages segments without progressive ore spawning before depletion
   - Hammer-depleted segments burst their remaining assigned yield at once
   - multiple Hammer-hit segments can deplete and burst in the same hit
   - Hammer burst ore spawns inside playable map bounds
   - `getVeinSpawnedOre(vein)` never exceeds `vein.finalYield`
   - each Hammer-hit segment's `spawnedOre` stays at or below `assignedYield`
+  - Drill progressive mining still damages a contacted segment in a smoke assertion
   - reset-spawned loose ore avoids the debug corridor wall zones
 - Local static server check for P1-D:
   - `http://127.0.0.1:8000/index.html` returned 200
-  - served `main.js` includes `applyHammerVeinHit`, `createCorridorTestCollisionZones`, and `applyDrillBiteLock`
+  - served `main.js` includes `getActiveHammerContactAction`, `hammerInVeinContact`, `applyHammerVeinHit`, `createCorridorTestCollisionZones`, and `applyDrillBiteLock`
 - P1-A VM draw/update smoke test passed.
 - `node --check main.js` for P0.5 data-table refactor.
 - P0.5 assertion script checked:
@@ -308,7 +317,7 @@ Important implementation points in `main.js`:
 - P1-A is still a test map, not formal level design.
 - P1-D adds only minimal Hammer burst mining and a debug corridor/corner test; vein respawn, ore rarity, formal level design, and formal economy are not implemented yet.
 - The corridor walls are debug collision zones, not a reusable blocker or level-design system.
-- Hammer burst values have assertion coverage but still need hands-on browser playtesting for impact feel, readability, and ore pile stability.
+- Hammer contact-entry impact values have assertion coverage but still need hands-on browser playtesting for impact feel, readability, and ore pile stability.
 
 ## Recommended Next Steps
 
