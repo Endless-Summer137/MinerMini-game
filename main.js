@@ -89,9 +89,12 @@ const drillBiteMaxTangentialCorrection = 14; // Max per-frame anti-slide correct
 const drillBiteSurfaceBias = 0.35; // Tiny inward bias during bite so the tip keeps contact after anti-slide correction.
 const drillBiteMaxSurfaceCorrection = 6; // Caps bite surface pinning. Higher can feel sticky; lower can lose contact.
 const drillBiteShakeAmount = 0.35; // Render-only body shake while biting the vein surface.
-const hammerDamagePerHit = 0.55; // Integrity removed per Hammer hit before resistance. Higher means fewer hits per segment.
+const hammerDamagePerHit = 0.3; // Integrity removed per Hammer hit. Test segments now need about 4 deliberate impacts.
+const hammerHitCooldown = 0.58; // Minimum seconds between Hammer impacts. Higher prevents rapid reverse-tap mining.
 const hammerContactSkin = 1.25; // Tiny post-collision skin for contact detection, not a gameplay damage radius.
 const hammerContactReleaseGrace = 0.08; // Seconds contact must be absent before the next Hammer impact can fire.
+const hammerPressureThreshold = 0.38; // Required input-dot toward contacted vein. Higher demands more direct impact intent.
+const hammerMinImpactSpeed = 38; // Actual approach speed that can count as impact intent even if input is noisy.
 const hammerAffectedSegments = 2; // Max segments damaged by one Hammer hit. Higher makes multi-burst easier.
 const hammerBurstScatterRadius = 34; // Ore spawn spread on Hammer depletion. Higher makes the burst wider.
 const hammerBurstSpeedMin = 34; // Minimum outward burst speed; keep modest so ore remains scoopable.
@@ -335,7 +338,10 @@ const VEIN_DEFS = {
     hammer: {
       resistance: 1,
       damagePerHit: hammerDamagePerHit,
+      hitCooldown: hammerHitCooldown,
       contactSkin: hammerContactSkin,
+      pressureThreshold: hammerPressureThreshold,
+      minImpactSpeed: hammerMinImpactSpeed,
       affectedSegments: hammerAffectedSegments,
       burstScatterRadius: hammerBurstScatterRadius,
       burstSpeedMin: hammerBurstSpeedMin,
@@ -488,6 +494,7 @@ let activeHammerTargets = []; // Recent Hammer-hit segments for short debug high
 let hammerTargetHighlightTimer = 0; // Seconds remaining for Hammer segment highlights.
 let hammerInVeinContact = false; // True while Hammer head is touching any non-depleted vein segment.
 let hammerContactReleaseTimer = 0; // Requires a clean leave before a new Hammer contact-entry hit.
+let hammerHitCooldownTimer = 0; // Blocks rapid re-entry hits so Hammer remains an impact tool, not fast mining.
 let lastControlInput = { active: false, x: 0, y: -1, strength: 0 }; // Cached input for Drill pressure checks after movement.
 
 function resetGame() {
@@ -515,6 +522,7 @@ function resetGame() {
   hammerTargetHighlightTimer = 0;
   hammerInVeinContact = false;
   hammerContactReleaseTimer = 0;
+  hammerHitCooldownTimer = 0;
   lastControlInput = { active: false, x: vehicle.dirX, y: vehicle.dirY, strength: 0 };
   coins = 0;
   collected = 0;
@@ -718,7 +726,10 @@ function migrateVeinDef(def) {
     hammer: {
       resistance: def.hammer?.resistance ?? def.hammerResistance ?? 1,
       damagePerHit: def.hammer?.damagePerHit ?? def.hammerDamagePerHit ?? hammerDamagePerHit,
+      hitCooldown: def.hammer?.hitCooldown ?? def.hammerHitCooldown ?? hammerHitCooldown,
       contactSkin: def.hammer?.contactSkin ?? def.hammerContactSkin ?? hammerContactSkin,
+      pressureThreshold: def.hammer?.pressureThreshold ?? def.hammerPressureThreshold ?? hammerPressureThreshold,
+      minImpactSpeed: def.hammer?.minImpactSpeed ?? def.hammerMinImpactSpeed ?? hammerMinImpactSpeed,
       affectedSegments: def.hammer?.affectedSegments ?? def.affectedSegments ?? hammerAffectedSegments,
       burstScatterRadius: def.hammer?.burstScatterRadius ?? def.hammerBurstScatterRadius ?? hammerBurstScatterRadius,
       burstSpeedMin: def.hammer?.burstSpeedMin ?? def.hammerBurstSpeedMin ?? hammerBurstSpeedMin,
@@ -993,6 +1004,7 @@ function getVehicleMovementIntent(input) {
 function updateVeins(dt) {
   activeDrillTarget = null;
   updateHammerTargetHighlight(dt);
+  hammerHitCooldownTimer = Math.max(0, hammerHitCooldownTimer - dt);
 
   if (isDrillToolActive()) {
     resetHammerVeinContactState();
@@ -1034,19 +1046,24 @@ function updateHammerTargetHighlight(dt) {
 }
 
 function updateHammerVeinMining(dt) {
-  const hammerAction = getActiveHammerContactAction();
-  if (!hammerAction) {
+  const contactAction = getActiveHammerContactAction();
+  if (!contactAction) {
     updateHammerContactRelease(dt);
     return;
   }
 
   hammerContactReleaseTimer = 0;
   if (hammerInVeinContact) return;
+  hammerInVeinContact = true;
+  if (hammerHitCooldownTimer > 0) return;
+
+  const hammerAction = getActiveHammerContactAction({ requireImpactIntent: true });
+  if (!hammerAction) return;
 
   const result = applyHammerVeinHit(hammerAction);
   if (result.hitCount <= 0) return;
 
-  hammerInVeinContact = true;
+  hammerHitCooldownTimer = hammerAction.hitCooldown;
   activeHammerTargets = result.targets;
   hammerTargetHighlightTimer = hammerTargetHighlightDuration;
   vehicle.overloadShake = Math.max(vehicle.overloadShake, hammerAction.burstShakeAmount);
@@ -1069,7 +1086,7 @@ function resetHammerVeinContactState() {
   hammerContactReleaseTimer = 0;
 }
 
-function getActiveHammerContactAction() {
+function getActiveHammerContactAction(options = {}) {
   if (!isHammerToolActive()) return null;
 
   const hits = [];
@@ -1087,6 +1104,7 @@ function getActiveHammerContactAction() {
         segment,
         hammerConfig,
         contactDepth: headContact.depth,
+        directionToSegment: headContact.directionToSegment,
       });
     }
   }
@@ -1098,9 +1116,12 @@ function getActiveHammerContactAction() {
   });
 
   const primaryConfig = hits[0].hammerConfig;
+  if (options.requireImpactIntent && !hasMeaningfulHammerImpact(hits, primaryConfig)) return null;
+
   const affectedCount = Math.max(1, primaryConfig.affectedSegments || hammerAffectedSegments);
   return {
     hits: hits.slice(0, affectedCount),
+    hitCooldown: primaryConfig.hitCooldown ?? hammerHitCooldown,
     burstShakeAmount: primaryConfig.burstShakeAmount ?? hammerBurstShakeAmount,
   };
 }
@@ -1108,7 +1129,30 @@ function getActiveHammerContactAction() {
 function getHammerHeadVeinSegmentContact(segment, hammerConfig) {
   const contactSkin = hammerConfig.contactSkin ?? hammerContactSkin;
   const contacts = getToolVeinSegmentContacts(TOOL_TYPES.hammer, segment, contactSkin);
-  return contacts.find((contact) => contact.kind === "hammerHead") || null;
+  const headContact = contacts.find((contact) => contact.kind === "hammerHead");
+  if (!headContact) return null;
+
+  return {
+    ...headContact,
+    directionToSegment: localToWorldVector(headContact.normal.x, headContact.normal.y),
+  };
+}
+
+function hasMeaningfulHammerImpact(hits, primaryConfig) {
+  const pressureThreshold = primaryConfig.pressureThreshold ?? hammerPressureThreshold;
+  const minImpactSpeed = primaryConfig.minImpactSpeed ?? hammerMinImpactSpeed;
+
+  return hits.some((hit) => {
+    const direction = hit.directionToSegment;
+    const inputPressure = lastControlInput.active
+      ? (lastControlInput.x * direction.x + lastControlInput.y * direction.y) * lastControlInput.strength
+      : 0;
+    const approachSpeed = vehicle.vx * direction.x + vehicle.vy * direction.y;
+
+    // This keeps Hammer as a deliberate impact: a contact enter must include
+    // either player pressure into the vein or actual movement toward it.
+    return inputPressure >= pressureThreshold || approachSpeed >= minImpactSpeed;
+  });
 }
 
 function applyHammerVeinHit(action) {
@@ -1386,7 +1430,10 @@ function getDefaultVeinHammerConfig() {
   return {
     resistance: 1,
     damagePerHit: hammerDamagePerHit,
+    hitCooldown: hammerHitCooldown,
     contactSkin: hammerContactSkin,
+    pressureThreshold: hammerPressureThreshold,
+    minImpactSpeed: hammerMinImpactSpeed,
     affectedSegments: hammerAffectedSegments,
     burstScatterRadius: hammerBurstScatterRadius,
     burstSpeedMin: hammerBurstSpeedMin,
