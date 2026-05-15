@@ -105,6 +105,7 @@ Scope:
 - per-segment integrity, assigned yield, spawned ore, visual state, and hit area
 - non-depleted segment solid bodies that block vehicle body and active tool heads
 - separate mine areas that detect Drill contact and pressure
+- Drill contact lock / bite feel on valid surface contact
 - Drill progressive damage and loose ore spawning
 - spawned ore enters the existing loose ore -> Scoop -> crusher loop
 
@@ -127,6 +128,8 @@ Manual checklist:
 - Hammer remains push-only and does not mine veins.
 - Vehicle body cannot pass through intact, cracked, or heavy-cracked vein segments.
 - Drill is stopped at the segment surface instead of slowly passing through the vein.
+- Drill does not slide freely around the circular segment surface while pushing into it.
+- Releasing input, reversing away, or losing Drill tip contact exits the bite lock.
 - Drill only damages a vein segment when the Drill tip has surface contact and input is pressing toward it.
 - Standing near the vein without pressure does not auto-mine.
 - Pressing away from the contacted segment does not mine.
@@ -140,7 +143,7 @@ Manual checklist:
 Validation notes:
 
 - `node --check main.js` passed for P1-C.
-- P1-C follow-up assertion script passed for solid segment data, vehicle/Drill collision resolution, depleted collision skipping, surface-contact Drill mining, no passive mining, no wrong-pressure mining, single-segment depletion, final-yield cap, Hammer non-mining, spawned loose ore, Scoop securing, and blocked switching while carrying secured ore.
+- P1-C Drill bite assertion script passed for valid contact lock, tangential slide damping, no magnetic lock after lost tip contact, release/reverse exit, surface-contact Drill mining, no passive mining, single-segment depletion, Hammer non-mining, spawned loose ore, Scoop securing, and push upgrade flow.
 - Local static server returned 200 for `index.html`.
 - Served `main.js` included `VEIN_DEFS`, `updateVeins`, `spawnProgressiveVeinOre`, and `drawVeins`.
 - In-app browser reloaded `http://127.0.0.1:8000/index.html` with no console errors.

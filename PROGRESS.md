@@ -4,7 +4,7 @@ Last updated: 2026-05-15
 
 ## Current Goal
 
-P1-C is a segmented ore vein and Drill progressive spawning checkpoint on top of the playable P1-A/P1-B prototype. The current follow-up makes non-depleted vein segments act as solid mineable surfaces instead of ghost trigger zones. The default scoop blade should still behave like a passive solid physical scoop:
+P1-C is a segmented ore vein and Drill progressive spawning checkpoint on top of the playable P1-A/P1-B prototype. The current follow-up makes Drill contact bite into non-depleted vein surfaces instead of sliding freely around circular segments. The default scoop blade should still behave like a passive solid physical scoop:
 
 - not magnetic
 - not one-way
@@ -39,7 +39,8 @@ P1-C is a segmented ore vein and Drill progressive spawning checkpoint on top of
   - non-depleted segments block the vehicle body and active tool heads before Drill damage is applied
   - depleted segments render as smaller broken residue and no longer use solid mineable collision
   - vein final yield is `floor(baseYield * yieldMultiplier)`, and assigned segment yields sum exactly to it
-  - Drill can progressively damage only the contacted solid segment when the player is pressing toward it
+  - Drill can progressively damage only the contacted solid segment when the Drill tip is touching and the player is pressing toward it
+  - valid Drill contact applies a bite lock that strongly damps tangential sliding along circular vein surfaces
   - damaged segments spawn normal loose ore over time, and spawned ore enters the existing Scoop -> crusher loop
   - Hammer remains a push-only placeholder and does not mine veins
 - Load-based vehicle slowdown and shake.
@@ -79,7 +80,7 @@ P1-C is a segmented ore vein and Drill progressive spawning checkpoint on top of
 
 ## Latest Change
 
-Implemented the P1-C solid mineable surface follow-up for segmented veins while preserving P1-A map/camera behavior and P1-B tool switching/push-only contact.
+Implemented the P1-C Drill contact lock / bite follow-up while preserving P1-A map/camera behavior and P1-B tool switching/push-only contact.
 
 Important implementation points in `main.js`:
 
@@ -87,7 +88,8 @@ Important implementation points in `main.js`:
 - `createVeinFromDef` calculates `finalYield = floor(baseYield * yieldMultiplier)` and distributes `assignedYield` exactly across segments.
 - Each segment stores `integrity`, `assignedYield`, `spawnedOre`, `visualState`, `depleted`, `solidBody`, `mineArea`, and compatibility `hitArea`.
 - `resolveVehicleAndToolVeinContacts` keeps the vehicle body and active tool head outside non-depleted segment `solidBody` circles.
-- `getActiveDrillAction` only mines while active tool is Drill and Drill has surface contact plus input pressure toward the contacted segment.
+- `getActiveDrillAction` only mines while active tool is Drill and Drill tip has surface contact plus input pressure toward the contacted segment.
+- `applyDrillBiteLock` strongly reduces tangential movement while the Drill is biting, keeps the tip near the surface, and exits immediately when input is released, reversed, or contact is lost.
 - Progressive spawning uses `floor(segment.assignedYield * damageProgress)` and caps against both segment yield and vein final yield.
 - Segment auto-finish only applies to the currently drilled heavy-cracked segment at `veinFinishThreshold`.
 - `drawVeins` uses simple debug shapes, mine-area rings, cracks, state labels, active segment highlight, and smaller depleted residue; no formal art was added.
@@ -195,6 +197,9 @@ Important implementation points in `main.js`:
   - non-depleted segments expose `solidBody` and `mineArea`
   - vehicle body and Drill tool collision resolve out of solid segments
   - depleted segments skip solid collision while untouched segments remain solid
+  - Drill bite lock enters only during Drill tip contact plus pressure
+  - valid bite lock strongly damps tangential sliding along a circular segment surface
+  - releasing input, reversing away, or losing tip contact exits bite lock
   - assigned segment yields sum exactly to final yield
   - standing near the vein does not mine
   - wrong pressure direction does not mine

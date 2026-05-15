@@ -84,6 +84,11 @@ const veinFinishThreshold = 0.08; // Heavy-cracked segments at/below this can au
 const veinSpawnScatterRadius = 24; // Spawn spread around a drilled segment. Higher scatters ore farther from the vein.
 const veinSolidContactTolerance = 2.5; // Drill mining surface tolerance after collision has pushed the tool out.
 const veinCollisionIterations = 3; // Repeated passes keep vehicle/tool from sinking through solid segments.
+const drillBiteTangentialRetention = 0.08; // Fraction of slide kept while Drill bites. Lower feels more locked/stalled.
+const drillBiteMaxTangentialCorrection = 14; // Max per-frame anti-slide correction. Higher locks harder but can snap.
+const drillBiteSurfaceBias = 0.35; // Tiny inward bias during bite so the tip keeps contact after anti-slide correction.
+const drillBiteMaxSurfaceCorrection = 6; // Caps bite surface pinning. Higher can feel sticky; lower can lose contact.
+const drillBiteShakeAmount = 0.35; // Render-only body shake while biting the vein surface.
 
 const wallBounceFactor = 0.22; // Mineral bounce after hitting world walls. Lower feels heavier.
 const wallContactTolerance = 3; // Distance treated as near-wall for stuck checks.
@@ -415,6 +420,7 @@ let activeTool = TOOL_TYPES.scoop; // P1-B active tool state. Only Scoop has gam
 let toolDebugNotice = ""; // Short screen-fixed debug feedback such as blocked switching.
 let toolDebugNoticeTimer = 0; // Seconds remaining before the tool debug notice disappears.
 let activeDrillTarget = null; // Current drilled segment for visual highlight; null when Drill pressure is not applied.
+let activeDrillBite = null; // Current Drill surface lock. Exists only during valid contact + pressure.
 let lastControlInput = { active: false, x: 0, y: -1, strength: 0 }; // Cached input for Drill pressure checks after movement.
 
 function resetGame() {
@@ -437,6 +443,7 @@ function resetGame() {
   toolDebugNotice = "";
   toolDebugNoticeTimer = 0;
   activeDrillTarget = null;
+  activeDrillBite = null;
   lastControlInput = { active: false, x: vehicle.dirX, y: vehicle.dirY, strength: 0 };
   coins = 0;
   collected = 0;
@@ -677,6 +684,7 @@ function getWorldBottomY(offset) {
 function updateVehicle(dt) {
   const input = getControlInput();
   lastControlInput = input;
+  activeDrillBite = null;
   const movement = getVehicleMovementIntent(input);
   const scoopActive = isScoopToolActive();
 
@@ -698,6 +706,7 @@ function updateVehicle(dt) {
   vehicle.y += movement.y * vehicle.chassis.speed * input.strength * speedMultiplier * dt;
   clampVehicleAndBladeToWalls(toolBoundary);
   resolveVehicleAndToolVeinContacts(toolBoundary);
+  applyDrillBiteLock(input, previousX, previousY, toolBoundary);
   clampVehicleAndBladeToWalls(toolBoundary);
   vehicle.vx = (vehicle.x - previousX) / Math.max(dt, 0.001);
   vehicle.vy = (vehicle.y - previousY) / Math.max(dt, 0.001);
@@ -769,12 +778,87 @@ function getActiveDrillAction(input) {
 
       const score = pressureDot * 1000 + surfaceContact.depth;
       if (!bestAction || score > bestAction.score) {
-        bestAction = { vein, segment, drillTip, pressureDot, surfaceContact, score };
+        bestAction = { vein, segment, drillTip, pressureDot, directionToSegment, surfaceContact, score };
       }
     }
   }
 
   return bestAction;
+}
+
+function applyDrillBiteLock(input, previousX, previousY, toolBoundary) {
+  activeDrillBite = null;
+  const action = getActiveDrillAction(input);
+  if (!action) return { active: false, x: 0, y: 0 };
+
+  // Solid circular vein collision can otherwise let the Drill slide sideways
+  // around the curve. During valid pressure, keep only a small fraction of this
+  // frame's tangential movement so the tool feels like it bites into the face.
+  const tangent = getDrillBiteTangent(action.directionToSegment);
+  const moveX = vehicle.x - previousX;
+  const moveY = vehicle.y - previousY;
+  const tangentialMove = moveX * tangent.x + moveY * tangent.y;
+  const correctionMagnitude = clamp(
+    -tangentialMove * (1 - drillBiteTangentialRetention),
+    -drillBiteMaxTangentialCorrection,
+    drillBiteMaxTangentialCorrection
+  );
+  const x = tangent.x * correctionMagnitude;
+  const y = tangent.y * correctionMagnitude;
+  vehicle.x += x;
+  vehicle.y += y;
+
+  keepDrillBiteOnSurface(action.segment);
+  resolveVehicleAndToolVeinContacts(toolBoundary);
+  const lockedAction = getActiveDrillAction(input);
+  if (!lockedAction) return { active: false, x, y };
+
+  const tip = getDrillTipWorldPosition();
+  activeDrillBite = {
+    veinId: lockedAction.vein.id,
+    segmentId: lockedAction.segment.id,
+    x: tip.x,
+    y: tip.y,
+    pressureDot: lockedAction.pressureDot,
+  };
+  vehicle.overloadShake = Math.max(vehicle.overloadShake, drillBiteShakeAmount * input.strength);
+  return { active: true, x, y };
+}
+
+function getDrillBiteTangent(directionToSegment) {
+  return {
+    x: -directionToSegment.y,
+    y: directionToSegment.x,
+  };
+}
+
+function keepDrillBiteOnSurface(segment) {
+  const tip = getDrillTipColliderWorldPosition(TOOL_TYPES.drill);
+  const solid = segment.solidBody;
+  const dx = tip.x - solid.x;
+  const dy = tip.y - solid.y;
+  const distanceBetween = Math.hypot(dx, dy);
+  if (distanceBetween <= 0.001) return { x: 0, y: 0 };
+
+  const desiredDistance = solid.radius + tip.radius - drillBiteSurfaceBias;
+  const correctionDistance = clamp(
+    desiredDistance - distanceBetween,
+    -drillBiteMaxSurfaceCorrection,
+    drillBiteMaxSurfaceCorrection
+  );
+  const normalX = dx / distanceBetween;
+  const normalY = dy / distanceBetween;
+  const x = normalX * correctionDistance;
+  const y = normalY * correctionDistance;
+  vehicle.x += x;
+  vehicle.y += y;
+  return { x, y };
+}
+
+function getDrillTipColliderWorldPosition(tool = TOOL_TYPES.drill) {
+  const tipCollider = getDrillToolColliders(tool).find((collider) => collider.kind === "drillTip");
+  const tip = bladeLocalToWorld(tipCollider.cx, tipCollider.cy);
+  return { x: tip.x, y: tip.y, radius: tipCollider.radius };
 }
 
 function spawnProgressiveVeinOre(vein, segment) {
@@ -1229,7 +1313,7 @@ function getDrillSegmentSurfaceContact(segment) {
   if (!isVeinSegmentSolid(segment)) return null;
 
   const contacts = getToolVeinSegmentContacts(TOOL_TYPES.drill, segment, veinSolidContactTolerance);
-  return contacts.find((contact) => contact.kind === "drillTip") || contacts[0] || null;
+  return contacts.find((contact) => contact.kind === "drillTip") || null;
 }
 
 function getToolVeinSegmentContacts(tool, segment, tolerance = 0) {
@@ -1600,8 +1684,7 @@ function isPushOnlyToolActive() {
 }
 
 function getDrillTipWorldPosition() {
-  const localX = getBladeStart() + activeTool.length;
-  const tip = bladeLocalToWorld(localX, 0);
+  const tip = getDrillTipColliderWorldPosition(TOOL_TYPES.drill);
   return { x: tip.x, y: tip.y, radius: drillTipContactRadius };
 }
 
@@ -2544,6 +2627,7 @@ function draw() {
   drawBladeSurface();
   for (const mineral of minerals) drawMineral(mineral);
   drawBladeRimAndVehicle();
+  drawDrillBiteIndicator();
   drawParticles("world");
   ctx.restore();
   drawParticles("screen");
@@ -2603,6 +2687,28 @@ function drawVeins() {
       drawVeinSegment(vein, segment);
     }
   }
+}
+
+function drawDrillBiteIndicator() {
+  if (!activeDrillBite) return;
+
+  const pulse = 1 + Math.sin(performance.now() * 0.05) * 0.22;
+  ctx.save();
+  ctx.translate(activeDrillBite.x, activeDrillBite.y);
+  ctx.strokeStyle = "rgba(240, 196, 107, 0.86)";
+  ctx.fillStyle = "rgba(240, 196, 107, 0.62)";
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.arc(0, 0, 4 * pulse, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(-7 * pulse, 0);
+  ctx.lineTo(7 * pulse, 0);
+  ctx.moveTo(0, -7 * pulse);
+  ctx.lineTo(0, 7 * pulse);
+  ctx.stroke();
+  ctx.restore();
 }
 
 function drawVeinSegment(vein, segment) {
@@ -2943,7 +3049,8 @@ function getHammerToolMetrics(tool) {
 
 function drawToolDebugOverlay() {
   const panelWidth = 210;
-  const panelHeight = toolDebugNotice ? 42 : 24;
+  const statusLine = toolDebugNotice || (activeDrillBite ? "Drilling" : "");
+  const panelHeight = statusLine ? 42 : 24;
   ctx.save();
   ctx.font = "700 12px Arial";
   ctx.textAlign = "left";
@@ -2955,10 +3062,10 @@ function drawToolDebugOverlay() {
   ctx.strokeRect(10, 10, panelWidth, panelHeight);
   ctx.fillStyle = "#f4f0df";
   ctx.fillText(`Tool: ${activeTool.displayName}`, 18, 16);
-  if (toolDebugNotice) {
+  if (statusLine) {
     ctx.font = "11px Arial";
     ctx.fillStyle = "#f0c46b";
-    ctx.fillText(toolDebugNotice, 18, 32);
+    ctx.fillText(statusLine, 18, 32);
   }
   ctx.restore();
 }
