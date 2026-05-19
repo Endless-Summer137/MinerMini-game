@@ -10,9 +10,11 @@ This is still a focused browser prototype, not a full game. It does not yet incl
 
 ## Play Online
 
-[Open the current prototype](https://endless-summer137.github.io/MinerMini-game/)
+[Open the current prototype](https://raw.githack.com/Endless-Summer137/MinerMini-game/main/index.html)
 
-The online prototype is deployed from `main` through GitHub Pages. It is the preferred path for sharing quick playtest builds because testers only need the link.
+This no-install preview serves the current `main` branch directly from the public GitHub repository, so testers only need the link.
+
+The repository also includes a GitHub Pages workflow for a cleaner official project URL later. After Pages is enabled in the repository settings, the intended official URL is `https://endless-summer137.github.io/MinerMini-game/`.
 
 ## Run Locally
 
