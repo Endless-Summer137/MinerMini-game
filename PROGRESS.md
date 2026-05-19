@@ -100,6 +100,8 @@ P1-D is a Hammer burst mining plus corridor / corner test checkpoint on top of t
 
 Implemented the P1-D follow-up that rebalances Hammer contact-entry impact damage so it remains a burst tool without replacing Drill. Hammer now needs multiple deliberate impacts, respects a hit cooldown, and requires impact intent while preserving Hammer burst mining, the simple corridor / corner test area, P1-C Drill progressive mining, and Drill bite feel.
 
+Repository recap: the current local branch is a P1-D prototype branch with P1-A larger-map camera work, P1-B tool switching, P1-C segmented vein Drill mining, and P1-D Hammer contact-entry burst mining documented together. The next work should remain playtest- and validation-driven; P2 systems should wait until P1-D feel is reviewed.
+
 Important implementation points in `main.js`:
 
 - `VEIN_DEFS.testThreeSegmentVein.hammer` now owns Hammer damage, hit cooldown, contact skin, pressure threshold, minimum impact speed, affected-segment count, burst scatter, burst speed, and mild shake tuning.
@@ -331,7 +333,7 @@ Important implementation points in `main.js`:
 
 ## Recommended Next Steps
 
-1. Manually playtest P1-D Hammer burst feel, multiple-segment burst readability, and spawned ore flow into Scoop/crusher.
+1. Manually playtest P1-D Hammer contact-entry cooldown feel, multiple-segment burst readability, and spawned ore flow into Scoop/crusher.
 2. Add repeatable physics regression tests for scoop lip containment and map boundary clamps.
 3. Split `main.js` into modules before adding many P1/P2 content types.
 4. Tune scoop lip friction, Hammer hit tuning, and corridor collision feel after more playtesting.

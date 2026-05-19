@@ -1,5 +1,7 @@
 # P1 Test Notes
 
+Current checkpoint: P1-D is the latest active P1 checkpoint. Earlier P1-A/P1-B/P1-C sections are kept as historical validation notes, so their scope and out-of-scope lists describe those checkpoints rather than the current build.
+
 ## P1-A Larger Map, Camera, Boundaries
 
 Scope:
