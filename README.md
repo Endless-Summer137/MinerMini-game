@@ -8,7 +8,13 @@ P1-D checkpoint: Hammer contact-entry burst mining and a simple corridor / corne
 
 This is still a focused browser prototype, not a full game. It does not yet include formal level design, Cocos Creator migration, merchants, base camp, cart cargo, blockers, formal art, formal sound, monetization, or mobile platform integration.
 
-## How to Run
+## Play Online
+
+[Open the current prototype](https://endless-summer137.github.io/MinerMini-game/)
+
+The online prototype is deployed from `main` through GitHub Pages. It is the preferred path for sharing quick playtest builds because testers only need the link.
+
+## Run Locally
 
 Clone or download the whole repository, then run a small static server from the repository root. Opening `index.html` directly with a `file://` URL is not the recommended path, because browser/local-file behavior or missing neighboring files can leave the prototype looking blank or partially loaded.
 
