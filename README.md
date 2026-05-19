@@ -10,14 +10,22 @@ This is still a focused browser prototype, not a full game. It does not yet incl
 
 ## How to Run
 
-Open `index.html` directly in a browser, or serve this folder with a small static server:
+Clone or download the whole repository, then run a small static server from the repository root. Opening `index.html` directly with a `file://` URL is not the recommended path, because browser/local-file behavior or missing neighboring files can leave the prototype looking blank or partially loaded.
 
 ```powershell
-cd D:\A-YuBai\MinerMini-game
+cd <path-to-your-clone>\MinerMini-game
 python -m http.server 8000 -b 127.0.0.1
 ```
 
 Then open `http://127.0.0.1:8000/index.html`.
+
+If `python` is not available, any static file server should work as long as it serves the repository root. For example:
+
+```powershell
+npx serve .
+```
+
+Then open the local URL printed by that command.
 
 ## Project Memory
 
